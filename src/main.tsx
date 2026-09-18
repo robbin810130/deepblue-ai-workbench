@@ -12,10 +12,23 @@ if (import.meta.hot) {
 
 const root = createRoot(document.getElementById('root')!);
 
+// ── 新版工作台（V3 重构）隔离预览入口 ──────────────────────────────
+// 访问 /next 进入新界面，旧入口保持原样、可随时回退。
+// 动态 import：新版代码独立分包，不进旧版首屏产物。
+const isNextApp = window.location.pathname.startsWith('/next');
+
 // 设计系统预览页：仅开发环境，URL 带 ?ui-preview 时进入。
 // 生产构建时 import.meta.env.DEV 恒为 false，该分支连同动态 import 会被整体移除，
 // 不会进入产物、不影响线上行为。
-if (
+if (isNextApp) {
+  import('./app/NextApp').then(({ NextApp }) => {
+    root.render(
+      <StrictMode>
+        <NextApp />
+      </StrictMode>,
+    );
+  });
+} else if (
   import.meta.env.DEV &&
   new URLSearchParams(window.location.search).has('ui-preview')
 ) {

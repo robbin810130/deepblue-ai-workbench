@@ -1,0 +1,159 @@
+/* ============================================================
+   设计稿语义 token —— 深蓝 AI 企业智能工作台（V3 重构）
+   依据：01_前端开发规范与页面设计说明 §2 UI 基线 / §3 布局尺寸 / §4 字体层级
+        + 已确认的工作台主界面设计稿
+
+   原则（与阶段 1 设计系统保持同一约定）：
+     1. 全部使用【新增命名空间】（primary / sidebar / page / surface /
+        line / ink / success / warning / danger / brandscene-*），
+     2. 不覆盖 Tailwind 默认值，也不修改既有 --color-brand-*（indigo），
+     3. 因此存量界面「零改动、零视觉变化」，新界面全部走本文件。
+
+   后续：待旧界面全部下线后，再统一收敛 brand-* → primary-*。
+   ============================================================ */
+@theme {
+  /* ------------------------------------------------------------
+     1. 品牌主色 —— #2F6BFF
+     用途：主按钮、链接、选中态、强调数值
+     ------------------------------------------------------------ */
+  --color-primary-50: #f0f5ff;
+  --color-primary-100: #e3ecff;
+  --color-primary-200: #c7d9ff;
+  --color-primary-300: #9bbbff;
+  --color-primary-400: #6e9bff;
+  --color-primary-500: #2f6bff; /* 主色本体 */
+  --color-primary-600: #1f58e8;
+  --color-primary-700: #1a47be;
+  --color-primary-800: #163a97;
+
+  /* ------------------------------------------------------------
+     2. 侧栏 —— #102A43 ～ #163A5F 深蓝
+     ------------------------------------------------------------ */
+  --color-sidebar-from: #163a5f;
+  --color-sidebar-to: #102a43;
+  --color-sidebar-fg: #ffffff;
+  --color-sidebar-fg-soft: #a7bdd4;
+  --color-sidebar-hover: rgba(255, 255, 255, 0.08);
+  --color-sidebar-active: rgba(255, 255, 255, 0.14);
+
+  /* ------------------------------------------------------------
+     3. 中性面 —— 页面底 / 卡片 / 分隔线 / 文字
+     ------------------------------------------------------------ */
+  --color-page: #f5f8fc; /* 页面底色 */
+  --color-surface: #ffffff; /* 卡片、面板 */
+  --color-surface-sunken: #f8fafc; /* 卡片内的下沉块（输入框、列表行） */
+  --color-line: #d9e2ec; /* 低对比度分隔线 */
+  --color-line-soft: #eaeff5; /* 更弱的分隔线（列表行之间） */
+
+  --color-ink: #101828; /* 标题 / 关键值 */
+  --color-ink-soft: #667085; /* 说明 / 时间 */
+  --color-ink-faint: #98a2b3; /* 占位符 / 极次要 */
+
+  /* ------------------------------------------------------------
+     4. 状态色 —— 完成 / 待确认 / 失败
+     设计稿要求：颜色不能作为唯一状态标识，必须同时显示文字
+     ------------------------------------------------------------ */
+  --color-success: #12b76a;
+  --color-success-soft: #e7f8ef;
+  --color-warning: #f79009;
+  --color-warning-soft: #fef4e6;
+  --color-danger: #f04438;
+  --color-danger-soft: #feeceb;
+  --color-info: #2f6bff;
+  --color-info-soft: #eaf1ff;
+
+  /* ------------------------------------------------------------
+     5. 六大业务场景主题色（SceneCard 渐变与图标用）
+     每项：main 主色 / soft 渐变起点 / wash 渐变终点
+     ------------------------------------------------------------ */
+  --color-scene-market: #2f6bff;
+  --color-scene-market-soft: #eaf1ff;
+  --color-scene-market-wash: #f6f9ff;
+
+  --color-scene-contract: #12b76a;
+  --color-scene-contract-soft: #e7f8ef;
+  --color-scene-contract-wash: #f4fcf8;
+
+  --color-scene-supply: #f79009;
+  --color-scene-supply-soft: #fff2e1;
+  --color-scene-supply-wash: #fff9f1;
+
+  --color-scene-content: #f25c9c;
+  --color-scene-content-soft: #ffe9f1;
+  --color-scene-content-wash: #fff6f9;
+
+  --color-scene-knowledge: #8b5cf6;
+  --color-scene-knowledge-soft: #f0ebff;
+  --color-scene-knowledge-wash: #f9f7ff;
+
+  --color-scene-analysis: #06a4b5;
+  --color-scene-analysis-soft: #e2f7f9;
+  --color-scene-analysis-wash: #f2fbfc;
+
+  /* ------------------------------------------------------------
+     6. 字号阶梯 —— 依据 §4 字体层级
+     说明：既有设计系统最大只到 16px（--text-title），
+          主标题 28～32px 与模块标题 18～20px 为本轮新增。
+     ------------------------------------------------------------ */
+  --text-display: 30px; /* 页面主标题（每页一个） */
+  --text-display--line-height: 40px;
+  --text-display--font-weight: 700;
+  --text-display--letter-spacing: -0.4px;
+
+  --text-heading: 19px; /* 模块标题 */
+  --text-heading--line-height: 28px;
+  --text-heading--font-weight: 600;
+
+  --text-subhead: 16px; /* 卡片标题（最多一行） */
+  --text-subhead--line-height: 24px;
+  --text-subhead--font-weight: 600;
+
+  /* ------------------------------------------------------------
+     7. 阴影 —— 整体比阶段 1 更轻（设计稿是「留白 > 装饰」）
+     ------------------------------------------------------------ */
+  --shadow-panel: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow-panel-hover: 0 4px 16px rgba(16, 24, 40, 0.08);
+}
+
+/* ============================================================
+   基础层：新版界面的字面与滚动条
+   ============================================================ */
+.dw-root {
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 输入框/文本域的占位符统一走 ink-faint */
+.dw-root ::placeholder {
+  color: var(--color-ink-faint);
+}
+
+/* 细滚动条：列表区与侧栏都需要，避免默认粗灰条破坏视觉 */
+.dw-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(152, 162, 179, 0.45) transparent;
+}
+.dw-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.dw-scroll::-webkit-scrollbar-thumb {
+  background: rgba(152, 162, 179, 0.4);
+  border-radius: 999px;
+}
+.dw-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(152, 162, 179, 0.65);
+}
+.dw-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ============================================================
+   响应式（§12）：1280 宽仍可用；<1200 待办区下沉；<900 侧栏折叠
+   ============================================================ */
+@media (max-width: 1199px) {
+  .dw-bottom-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
