@@ -1,0 +1,25 @@
+# 发票校验模块需求文档 (InvoiceVerifyModule)
+
+## 1. 功能描述
+发票校验模块是一个发票PDF文件和xlsx表格对比工具，用于对比商品名称、开票金额、税率细节差异。
+
+## 2. 核心流程
+1. 用户上传发票PDF文件，支持多个文件（必填）。
+2. 用户上传xlsx表格文件，支持多个文件（必填）。
+3. 调用 Dify 工作流进行发票校验。
+4. 渲染分析结果。
+
+## 3. 视觉优化需求
+- **排版结构**：采用列表或表格形式呈现，增强可读性。
+- **美观性**：结果框应具有现代感，背景、内边距和动画效果应与整体 UI 保持一致。
+
+## 4. 技术实现
+- 使用 `ReactMarkdown` 配合 `remarkGfm` 和 `rehypeRaw`。
+- 前端对后端返回的原始文本进行结构化预处理。
+- 利用 Tailwind CSS 进行样式定制。
+
+## 5. 后端接口
+- `POST /api/invoice-verify/upload` - 文件上传中转（PDF/xlsx → Dify file_id）
+- `POST /api/invoice-verify/run` - 触发 Dify 发票校验工作流
+- `GET /api/invoice-verify/history` - 获取上传历史记录
+- 环境变量：`DIFY_INVOICE_VERIFY_API_KEY` / `DIFY_INVOICE_VERIFY_API_URL`

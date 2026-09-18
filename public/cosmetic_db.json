@@ -1,0 +1,230 @@
+[
+    {
+        "id": "001",
+        "name": "经典正红唇釉",
+        "brand": "示例品牌A",
+        "category": "唇部",
+        "subcategory": "唇釉",
+        "color_id": "CR-01",
+        "color_name": "正红",
+        "finish": "水光",
+        "tags": [
+            "口红",
+            "唇釉",
+            "正红",
+            "水光",
+            "节日"
+        ],
+        "image": "https://images.unsplash.com/photo-1586495777744-4e6232bf2263?w=400&h=400&fit=crop",
+        "similarity": 0
+    },
+    {
+        "id": "002",
+        "name": "豆沙哑光唇膏",
+        "brand": "示例品牌B",
+        "category": "唇部",
+        "subcategory": "唇膏",
+        "color_id": "DS-02",
+        "color_name": "豆沙",
+        "finish": "哑光",
+        "tags": [
+            "口红",
+            "唇膏",
+            "豆沙",
+            "哑光",
+            "日常"
+        ],
+        "image": "https://images.unsplash.com/photo-1617897903246-719242758050?w=400&h=400&fit=crop",
+        "similarity": 0
+    },
+    {
+        "id": "003",
+        "name": "裸色滋润口红",
+        "brand": "示例品牌A",
+        "category": "唇部",
+        "subcategory": "口红",
+        "color_id": "NK-03",
+        "color_name": "裸色",
+        "finish": "滋润",
+        "tags": [
+            "口红",
+            "裸色",
+            "滋润",
+            "通勤",
+            "日常"
+        ],
+        "image": "https://images.unsplash.com/photo-1596704017234-0b761cff3078?w=400&h=400&fit=crop",
+        "similarity": 0
+    },
+    {
+        "id": "004",
+        "name": "珠光四色眼影盘",
+        "brand": "示例品牌C",
+        "category": "眼部",
+        "subcategory": "眼影",
+        "color_id": "EW-04",
+        "color_name": "大地色",
+        "finish": "珠光",
+        "tags": [
+            "眼影",
+            "大地色",
+            "珠光",
+            "烟熏",
+            "眼部"
+        ],
+        "image": "https://images.unsplash.com/photo-1512207736890-6ffed8a84e8d?w=400&h=400&fit=crop",
+        "similarity": 0
+    },
+    {
+        "id": "005",
+        "name": "玫瑰金高光眼影",
+        "brand": "示例品牌D",
+        "category": "眼部",
+        "subcategory": "眼影",
+        "color_id": "RG-05",
+        "color_name": "玫瑰金",
+        "finish": "闪烁",
+        "tags": [
+            "眼影",
+            "玫瑰金",
+            "高光",
+            "闪烁",
+            "派对"
+        ],
+        "image": "https://images.unsplash.com/photo-1522335789203-aabd1fc54bc9?w=400&h=400&fit=crop",
+        "similarity": 0
+    },
+    {
+        "id": "006",
+        "name": "轻薄透气粉底液",
+        "brand": "示例品牌B",
+        "category": "底妆",
+        "subcategory": "粉底液",
+        "color_id": "FB-06",
+        "color_name": "自然色",
+        "finish": "雾面",
+        "tags": [
+            "粉底液",
+            "底妆",
+            "自然",
+            "轻薄",
+            "持妆"
+        ],
+        "image": "https://images.unsplash.com/photo-1631214524020-3c69d4a8f054?w=400&h=400&fit=crop",
+        "similarity": 0
+    },
+    {
+        "id": "007",
+        "name": "全遮瑕持妆粉底",
+        "brand": "示例品牌C",
+        "category": "底妆",
+        "subcategory": "粉底液",
+        "color_id": "FC-07",
+        "color_name": "象牙白",
+        "finish": "哑光",
+        "tags": [
+            "粉底液",
+            "遮瑕",
+            "持妆",
+            "哑光",
+            "全天候"
+        ],
+        "image": "https://images.unsplash.com/photo-1583241475880-083f84372725?w=400&h=400&fit=crop",
+        "similarity": 0
+    },
+    {
+        "id": "008",
+        "name": "水光保湿精华",
+        "brand": "示例品牌A",
+        "category": "护肤",
+        "subcategory": "精华",
+        "color_id": "SK-08",
+        "color_name": "无色",
+        "finish": "水光",
+        "tags": [
+            "精华",
+            "护肤",
+            "保湿",
+            "补水",
+            "水光"
+        ],
+        "image": "https://images.unsplash.com/photo-1556229010-6c3f2c9ca5f8?w=400&h=400&fit=crop",
+        "similarity": 0
+    },
+    {
+        "id": "009",
+        "name": "玫瑰修护面霜",
+        "brand": "示例品牌D",
+        "category": "护肤",
+        "subcategory": "面霜",
+        "color_id": "CR-09",
+        "color_name": "无色",
+        "finish": "滋润",
+        "tags": [
+            "面霜",
+            "护肤",
+            "玫瑰",
+            "修护",
+            "滋润"
+        ],
+        "image": "https://images.unsplash.com/photo-1620916566398-39f1143ab7be?w=400&h=400&fit=crop",
+        "similarity": 0
+    },
+    {
+        "id": "010",
+        "name": "清透防晒隔离霜",
+        "brand": "示例品牌B",
+        "category": "护肤",
+        "subcategory": "防晒",
+        "color_id": "SP-10",
+        "color_name": "无色",
+        "finish": "清爽",
+        "tags": [
+            "防晒",
+            "护肤",
+            "隔离",
+            "清透",
+            "SPF50"
+        ],
+        "image": "https://images.unsplash.com/photo-1611080626919-7cf5a9dbab12?w=400&h=400&fit=crop",
+        "similarity": 0
+    },
+    {
+        "id": "011",
+        "name": "珊瑚橘腮红",
+        "brand": "示例品牌C",
+        "category": "面部",
+        "subcategory": "腮红",
+        "color_id": "BL-11",
+        "color_name": "珊瑚橘",
+        "finish": "哑光",
+        "tags": [
+            "腮红",
+            "面部",
+            "珊瑚橘",
+            "哑光",
+            "元气"
+        ],
+        "image": "https://images.unsplash.com/photo-1599652096096-2d5e5b44c297?w=400&h=400&fit=crop",
+        "similarity": 0
+    },
+    {
+        "id": "012",
+        "name": "奢华香水礼盒",
+        "brand": "示例品牌A",
+        "category": "香氛",
+        "subcategory": "香水",
+        "color_id": "PF-12",
+        "color_name": "玫瑰金瓶",
+        "finish": "清新花香",
+        "tags": [
+            "香水",
+            "香氛",
+            "礼盒",
+            "奢华",
+            "花香"
+        ],
+        "image": "https://images.unsplash.com/photo-1541643600914-78b084683702?w=400&h=400&fit=crop",
+        "similarity": 0
+    }
+]

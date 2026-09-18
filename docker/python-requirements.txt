@@ -1,0 +1,13 @@
+# Dependencies for Python scripts invoked by the WebOS API.
+beautifulsoup4
+DrissionPage
+numpy
+openpyxl
+pandas
+psycopg2-binary
+pyodbc
+python-dotenv
+PyYAML
+requests
+SQLAlchemy
+volcengine-python-sdk[ark]

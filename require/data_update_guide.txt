@@ -1,0 +1,171 @@
+# 集成预测数据更新功能使用说明
+
+## 功能概述
+
+集成预测模块现已支持从数据库加载真实的销售数据，并通过"更新数据"按钮刷新数据显示。
+
+## 数据更新流程
+
+### 步骤1: 配置数据库连接
+
+1. 在项目根目录创建 `.env` 文件
+2. 添加以下配置（根据实际情况修改）:
+
+```env
+DB_DRIVER={SQL Server}
+DB_SERVER=your_server_address
+DB_DATABASE=your_database_name  
+DB_UID=your_username
+DB_PWD=your_password
+```
+
+> ⚠️ **安全提示**: `.env` 文件已添加到 `.gitignore`，不会提交到版本控制
+
+### 步骤2: 安装Python依赖
+
+```bash
+pip install pandas sqlalchemy pyodbc python-dotenv
+```
+
+### 步骤3: 执行数据更新脚本
+
+在项目根目录执行:
+
+```bash
+python a2_integrated_forecasting.py
+```
+
+脚本将:
+- 从数据库查询销售数据
+- 执行 Top 80% SKU 筛选
+- 生成月度和季度销售额透视表
+- 输出 `sales_analysis_matrix.json` 文件
+
+### 步骤4: 移动JSON文件到public文件夹
+
+```bash
+# Windows PowerShell
+Move-Item -Path "sales_analysis_matrix.json" -Destination "public\" -Force
+
+# 或手动拖拽文件到 public 文件夹
+```
+
+### 步骤5: 前端刷新数据
+
+1. 访问 http://localhost:5174
+2. 登录系统  
+3. 点击"集成预测"模块
+4. 点击页面右上角的"更新数据"按钮
+5. 数据将自动刷新显示
+
+## 界面功能说明
+
+### 更新数据按钮
+- **位置**: 页面右上角
+- **图标**: 刷新图标 🔄
+- **功能**: 重新读取 JSON 文件并刷新表格
+- **状态**: 加载时显示"加载中..."并显示旋转动画
+
+### 月度销售额表格
+- **显示内容**: SKU ID、产品名称、各月份销售额
+- **列数**: 动态生成（通常13列：过去12个月+当前月）
+- **行数限制**: 最多显示10个SKU
+- **滚动**: 纵向和横向均可滚动查看
+- **数据格式**: 货币格式,保留2位小数
+
+### 季度销售额表格
+- **显示内容**: SKU ID、产品名称、各季度销售额
+- **列数**: 动态生成（通常5列：过去4个季度+当前季度）
+- **行数限制**: 最多显示10个SKU
+- **滚动**: 支持纵向滚动查看更多数据
+
+### 数据说明区域
+- 显示数据来源、SKU筛选规则、数值单位等元信息
+- 显示上次数据更新时间
+
+## 自动化建议
+
+### 创建批处理脚本 (可选)
+
+创建 `update_data.bat` 文件:
+
+```bat
+@echo off
+cd /d D:\my-web-os
+python a2_integrated_forecasting.py
+if %ERRORLEVEL% EQU 0 (
+    move /Y sales_analysis_matrix.json public\
+    echo ✓ 数据更新成功！时间: %date% %time%
+) else (
+    echo ✗ 数据更新失败，请检查Python脚本
+)
+pause
+```
+
+双击运行此脚本即可一键更新数据。
+
+### 设置定时任务 (可选)
+
+使用Windows任务计划程序定时执行 `update_data.bat`，实现数据自动更新。
+
+## 常见问题
+
+### Q1: 点击"更新数据"后提示"数据文件加载失败"
+
+**解决方案**:
+- 确认 `sales_analysis_matrix.json` 文件存在于 `public` 文件夹
+- 检查文件内容是否为有效的JSON格式
+- 查看浏览器控制台的详细错误信息
+
+### Q2: Python脚本执行失败
+
+**可能原因**:
+- 数据库连接配置错误 → 检查 `.env` 文件
+- 缺少Python依赖包 → 执行 `pip install` 安装
+- SQL Server驱动未安装 → 安装ODBC驱动
+
+### Q3: 表格显示为空
+
+**解决方案**:
+- 确认JSON文件包含数据
+- 检查 `monthly_matrix` 和 `quarterly_matrix` 数组非空
+- 点击"更新数据"按钮重新加载
+
+### Q4: 数据更新后前端未刷新
+
+**解决方案**:
+- 确保JSON文件已移动到 `public` 文件夹
+- 清除浏览器缓存 (Ctrl+Shift+R 强制刷新)
+- 点击"更新数据"按钮手动刷新
+
+## 技术说明
+
+### 数据流程图
+
+```
+数据库 → Python脚本 → JSON文件 → Public文件夹 → 前端加载 → 用户界面
+   ↑                                                      ↓
+   └──────────── 定时/手动触发 ←──────────────────────┘
+```
+
+### JSON数据结构
+
+```json
+{
+  "monthly_matrix": [...],      // 月度数据数组
+  "quarterly_matrix": [...],    // 季度数据数组
+  "meta_info": {
+    "query_time": "...",         // 数据查询时间
+    "monthly_columns": [...],    // 月份列名数组
+    "quarterly_columns": [...]   // 季度列名数组
+  }
+}
+```
+
+## 后续增强建议
+
+- [ ] 添加数据刷新时间间隔限制（防止频繁刷新）
+- [ ] 支持按SKU ID或产品名称搜索过滤
+- [ ] 添加数据导出功能（Excel/CSV）
+- [ ] 实现数据趋势图表可视化
+- [ ] 集成到后端API实现全自动化更新

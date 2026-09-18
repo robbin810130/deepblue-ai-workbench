@@ -1,0 +1,51 @@
+{
+  "report_date": "2026-09-02",
+  "categories": {
+    "macro_policy": {
+      "name": "宏观政策与合规",
+      "news_list": [
+        {
+          "title": "G20创新部长级会议揭幕，美国拟推“卡罗来纳原则”促各国采取宽松AI监管，马斯克视讯出席、黄仁勋与奥特曼将亲自参会",
+          "source": "法国国际广播电台",
+          "url": "https://www.rfi.fr/cn/%E5%9B%BD%E9%99%85%E6%8A%A5%E9%81%93/20260901-g20%E9%83%A8%E9%95%BF%E7%BA%A7%E4%BC%9A%E8%AE%AE%E6%8F%AD%E5%B9%95-%E7%BE%8E%E6%8B%9F%E4%BF%83%E5%90%84%E6%96%B9%E9%87%87%E5%8F%96%E5%AE%BD%E6%9D%BEai%E7%9B%91%E7%AE%A1%E5%8E%9F%E5%88%99",
+          "time": "2026-09-01 16:32"
+        }
+      ]
+    },
+    "capital_investment": {
+      "name": "资本与投融资",
+      "news_list": []
+    },
+    "tech_frontier": {
+      "name": "科技前沿",
+      "news_list": []
+    },
+    "celebrity_dynamics": {
+      "name": "名人动态",
+      "news_list": [
+        {
+          "title": "马斯克与奥特曼冲突升级：SpaceX收购Cursor后，OpenAI拟终止直接供应模型，马斯克公开斥责奥特曼与布罗克曼为“完全不可信的混蛋”",
+          "source": "Threads",
+          "url": "https://www.threads.com/@fox.hsiao/post/DcnxmoAATbw/video-elon-musk-%E5%9C%A8-x-%E5%A4%A7%E7%BD%B5-sam-altman-%E8%88%87-greg-brockman-%E6%98%AF%E5%AE%8C%E5%85%A8%E4%B8%8D%E5%8F%AF%E4%BF%A1%E7%9A%84%E6%B7%B7%E8%9B%8B%E4%BD%86%E9%80%99%E5%A0%B4%E8%A1%9D%E7%AA%81%E6%9B%B4%E5%80%BC%E5%BE%97%E7%9C%8B%E7%9A%84%E6%98%AF-600-%E4%BA%BF%E7%BE%8E%E5%85%835-%E8%88%87-11-%E6%9C%88",
+          "time": "2026-08-30 09:00"
+        }
+      ]
+    },
+    "local_info": {
+      "name": "地方资讯",
+      "news_list": []
+    },
+    "industry_news": {
+      "name": "行业新闻",
+      "news_list": [
+        {
+          "title": "《时代》杂志公布2026年全球百大AI影响力人物，马斯克、奥特曼上榜，而英伟达CEO黄仁勋及AMD CEO苏姿丰意外落榜",
+          "source": "香港01",
+          "url": "https://global.hk01.com/%E5%8D%B3%E6%97%B6%E5%9B%BD%E9%99%85/60384838/%E6%97%B6%E4%BB%A3-2026%E5%B9%B4%E7%99%BE%E5%A4%A7ai%E4%BA%BA%E7%89%A9-%E9%A9%AC%E6%96%AF%E5%85%8B-%E5%A5%A5%E7%89%B9%E6%9B%BC%E4%B8%8A%E6%A6%9C-%E9%BB%84%E4%BB%81%E5%8B%8B%E6%9C%AA%E5%85%A5%E5%88%97",
+          "time": "2026-08-31 09:00"
+        }
+      ]
+    }
+  },
+  "date": "2026-09-02"
+}

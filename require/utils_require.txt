@@ -1,0 +1,44 @@
+# 工具模块 (Utils) 需求文档
+
+## 1. 业务目标
+提供全局通用的工具函数，提高代码复用性与系统可维护性。
+
+## 2. 核心功能
+
+### 2.1 后端脱敏工具 (Backend Masking Utils)
+- **文件路径**: `utils/maskingUtils.js`
+- **主要功能**:
+  - `maskName(name)`: 对姓名或客户名称进行掩码处理。
+    - 2字：张三 -> 张*
+    - 3字：张小三 -> 张*三
+    - 4字及以上：上海嘉定公司 -> 上**司
+  - `maskAmount(amount)`: 对金额进行掩码处理，保留前两位数字及小数点。
+    - 12345.67 -> 12***.67
+  - `maskPhone(phone)`: 对联系电话进行掩码处理。
+    - 13812345678 -> 138****5678
+
+### 2.2 前端脱敏工具 (Frontend Masking Utils)
+- **文件路径**: `src/utils/masking.ts`
+- **主要内容**:
+  - `maskProductName(name)`: 对产品名称进行掩码处理（主要用于前端展示逻辑，现已在营销预测模块中移除，由后端统一处理）。
+  - `maskCustomerName(name)`: 对客户名称进行掩码处理。
+
+- 所有通用的逻辑（如日期格式化、字符串处理、加密脱敏等）应优先通过此类工具模块实现，禁止在业务逻辑中重复编写相似代码。
+- 新增工具函数需同时更新此文档。
+
+### 2.3 预测品牌脱敏工具 (2026-04-17)
+- **文件路径**: `utils/maskingUtils.js`
+- **新增函数**: `maskProductNamesByBrandDict(data, brandDict)`
+  - 对数据对象中的 monthly_matrix / quarterly_matrix 每行 product_name 字段
+    按 brand_dictionary 表（[{id, brand_name}]）依次替换品牌名为"品牌[id]"
+  - 按品牌名长度降序匹配，防止短品牌名误匹配长品牌名的子集
+  - 原始数据对象不被修改（浅拷贝行数据）
+  - 专用于调用 DIFY_CHATFLOW_API_KEY 前的数据脱敏
+
+### 2.4 品牌提取工具 (2026-04-17 更新)
+- **文件路径**: `utils/aiUtils.js`
+- **函数**: `extractBrandsFromProducts(productNames)`
+  - 调用 DIFY_BRAND_EXTRACT_API_KEY 工作流提取商品名中的品牌
+  - 使用 **blocking 模式**，同步等待工作流执行完成（确保 brand_dictionary 已更新后再返回）
+  - 返回值: `{ success: boolean, added?: number, message?: string }`
+  - 原先为 fire-and-forget，2026-04-17 改为 blocking 以支持调用后立即查询品牌字典的场景

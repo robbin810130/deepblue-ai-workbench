@@ -1,0 +1,50 @@
+# syntax=docker/dockerfile:1
+# WebOS backend: Node.js API plus the Python runtimes called by server/server.js.
+FROM node:22-bookworm-slim
+
+ENV NODE_ENV=production \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONIOENCODING=utf-8 \
+    PATH="/opt/venv/bin:${PATH}"
+
+WORKDIR /app
+
+# Chromium + DrissionPage support the video-generation RPA feature. unixODBC
+# supports the existing SQL Server customer-analysis script.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        chromium \
+        python3 \
+        python3-pip \
+        python3-venv \
+        postgresql-client \
+        unixodbc \
+        unixodbc-dev \
+    && python3 -m venv /opt/venv \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY docker/python-requirements.txt /tmp/python-requirements.txt
+RUN pip install --no-cache-dir -r /tmp/python-requirements.txt
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+
+COPY . .
+
+# These directories are bind-mounted by Compose in production. Creating them
+# here also makes the image usable without Compose for diagnostics.
+RUN mkdir -p \
+    /app/logs \
+    /app/tmp/uploads \
+    /app/public/uploads \
+    /app/uploads/enterprise-qualification \
+    /app/server/storage/business-dashboards
+
+EXPOSE 3001
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+    CMD node -e "fetch('http://127.0.0.1:3001/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+
+CMD ["node", "server/server.js"]

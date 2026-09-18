@@ -1,0 +1,46 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+/* ============================================================
+   设计 token —— 阶段 1 设计系统基座
+   定案：主色 indigo（2026-09-18）
+   原则：全部使用新命名空间，不覆盖 Tailwind 默认值，
+        保证存量代码「零改动、零视觉变化」。
+   ============================================================ */
+@theme {
+  /* ---- 品牌主色：indigo ---- */
+  --color-brand-50: #eef2ff;
+  --color-brand-100: #e0e7ff;
+  --color-brand-200: #c7d2fe;
+  --color-brand-300: #a5b4fc;
+  --color-brand-400: #818cf8;
+  --color-brand-500: #6366f1;
+  --color-brand-600: #4f46e5;
+  --color-brand-700: #4338ca;
+  --color-brand-800: #3730a3;
+
+  /* ---- 语义圆角：3 档（收敛自现有 6 档） ---- */
+  --radius-control: 8px;
+  --radius-card: 12px;
+  --radius-panel: 16px;
+
+  /* ---- 语义字号：5 档（收敛自现有 300+ 处 arbitrary px） ---- */
+  --text-2xs: 11px;
+  --text-2xs--line-height: 16px;
+  --text-caption: 12px;
+  --text-caption--line-height: 18px;
+  --text-body: 13px;
+  --text-body--line-height: 20px;
+  --text-lead: 14px;
+  --text-lead--line-height: 22px;
+  --text-title: 16px;
+  --text-title--line-height: 24px;
+
+  /* ---- 语义阴影：3 档（收敛自现有 6 档） ---- */
+  --shadow-control: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-card: 0 1px 3px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-overlay: 0 20px 40px rgba(15, 23, 42, 0.18);
+}
+
+.hide-scrollbar::-webkit-scrollbar { display: none; }
+.hide-scrollbar { scrollbar-width: none; }

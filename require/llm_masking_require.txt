@@ -1,0 +1,33 @@
+# 客户名称脱敏模块需求文档 (llm_masking_require.txt)
+
+## 1. 模块概述
+本模块用于在 LLM 处理涉及敏感客户名称的数据时，提供特征提取与映射支持。通过将原始名称与脱敏后的特征（省份、城市、渠道等）进行关联，确保在不暴露真实公司名的情况下，AI 仍能根据地域、渠道等统计特征进行准确分析。
+
+## 2. 数据库设计
+表名：\`llm_customer_feature_mapping\`
+
+| 字段名 | 类型 | 说明 |
+|---|---|---|
+| client_sqlserver_cust_id | VARCHAR(255) | 主键，对应输入数据中的 customer.id |
+| raw_name | TEXT | 原始公司名称（敏感信息） |
+| province | VARCHAR(100) | 客户所属省份 |
+| city | VARCHAR(100) | 客户所属城市 |
+| channel_type | VARCHAR(100) | 客户渠道类型 |
+| is_individual | BOOLEAN | 是否包含个人/自然人特征（TRUE/FALSE） |
+| created_at | TIMESTAMP | 记录创建时间 |
+| updated_at | TIMESTAMP | 记录更新时间 |
+
+## 3. 功能说明
+1. **数据脱敏**：在调用 LLM 前，通过本表查询客户对应的特征，将原始名称替换为脱敏标签（如“广东某零售客户”）。
+2. **特征保留**：确保脱敏后的文本中保留关键分析维度（省份、城市、渠道），以免影响 AI 预测。
+3. **个人识别**：通过 \`is_individual\` 字段标识是否为散户/个人，以便采用不同的脱敏策略。
+
+## 4. 后端集成
+- 数据库连接：使用 PostgreSQL 连接池（\`db.js\`）。
+- API 接口：待开发，需支持按 \`client_sqlserver_cust_id\` 查询特征。
+
+## 5. 开发状态
+- [x] 数据库表结构创建
+- [x] 需求文档定义
+- [ ] 脱敏算法逻辑集成
+- [ ] 自动化特征提取脚本

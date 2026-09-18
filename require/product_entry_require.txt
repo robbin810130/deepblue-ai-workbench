@@ -1,0 +1,76 @@
+# 商品库录入模块需求文档 (ProductEntryModule)
+
+## 1. 功能描述
+商品库录入模块是一个 AI 驱动的商品数据批量录入工具，通过 Dify 人工介入工作流实现 Excel 表格的智能解析与商品信息补全。用户上传 .xlsx / .xls 格式的表格文件后，系统自动识别 Sheet 页面、解析商品 SKU 数据，支持用户对 SKU 进行合并为 SPU、拆分为 SPU、删除行等操作，最终通过两次人工确认节点将商品数据批量录入商品库。整个流程包含：文件上传 → Sheet 选择 → SKU 解析 → SPU/SKU 管理 → 补全信息确认 → 录入结果。
+
+## 2. 核心流程
+1. **文件上传**：用户上传 .xlsx 或 .xls 格式表格文件（支持多文件），必填填写供应商名称。
+2. **Sheet 选择**：后端调用 Dify 获取文件中的 Sheet 列表，以可滚动列表形式展示，用户选择目标 Sheet。
+3. **SKU 解析**：后端将文件和 Sheet 信息提交 Dify 工作流，工作流在第一个「人工介入」节点暂停，返回解析后的 SKU 列表。
+4. **SPU/SKU 管理**（解析结果页）：
+   - 展示 SKU 列表表格，支持整行勾选、整行删除。
+   - **合并为 SPU**：勾选多行后合并为一个 SPU 组，以 SPU 头行 + 子 SKU 行展示。
+   - **拆分为 SPU**：勾选行标记为已拆分（带 SPLIT 字段），已拆分行可再次取消拆分恢复为独立状态。
+   - 已合并的行不可单独删除，需先解散 SPU 组。
+   - 点击「确认录入」提交第二个人工介入表单，数据转为中文 key 的数组的数组格式。
+5. **补全信息确认**：工作流返回补全信息列表（含主图、SPU 图册、品牌、分类等可编辑字段），以卡片形式展示，主图和图册以图片形式渲染，其余字段为可编辑输入框。
+6. **最终提交**：用户确认补全信息后提交，工作流完成录入，保存历史记录。
+7. **历史记录**：展示最近 50 条录入记录，支持查看解析结果、确认结果、删除记录。
+
+## 3. 视觉优化需求
+- **文件上传区**：拖拽上传区域，文件列表以卡片形式展示，带文件图标和删除按钮。
+- **Sheet 选择**：可滚动列表（最大高度 320px），每行显示序号圆圈 + Sheet 名称 + 选中勾选图标，选中行淡绿色背景。
+- **SKU 表格**：
+  - 整行点击勾选，选中行蓝色背景。
+  - 已合并行灰色背景，带 `└─` 缩进标识。
+  - 已拆分行淡黄色背景（`bg-amber-50/40`）。
+  - 操作列宽度 `w-12`，已合并行隐藏删除按钮。
+  - SPU 头行 `colSpan` 覆盖全部列（含 checkbox 和操作列）。
+- **操作按钮**：
+  - 「拆分为 SPU」/ 「取消拆分」：根据选中行状态动态切换文字和颜色（橙色/灰色）。
+  - 「合并为 SPU」：绿色，至少勾选 2 行才可点击。
+  - 「删除选中行」：红色。
+- **补全信息卡片**：
+  - 左侧图片区域：主图 140×140 等比缩放（`objectFit: contain`），下方展示 SPU 图册缩略图（36×36）。
+  - 右侧字段网格：2~3 列自适应布局，字段名中文标签，输入框可编辑。
+  - 错误信息行红色高亮。
+- **历史记录**：折叠面板展示，每条记录显示文件名、SKU/SPU 数量、状态、时间。
+
+## 4. 技术实现
+
+### 前端
+- **组件文件**：`src/components/ProductEntryModule.tsx`
+- **状态管理**：6 个步骤状态机 `Step = 'upload' | 'selectSheet' | 'parse' | 'confirm' | 'completionInfo' | 'confirmCompletion'`
+- **Dify 人工介入**：
+  - 工作流暂停时返回 `status: "paused"` 和 `form_token`
+  - 通过 `GET /form/human_input/{form_token}` 获取表单定义（`user_actions`、`inputs`）
+  - 通过 `POST /form/human_input/{form_token}` 提交表单数据
+- **数据格式转换**：
+  - 英文字段名映射为中文 key（如 `name` → `商品名称`）
+  - SPU 合并组为多元素数组 `[{...}, {...}]`
+  - 独立 SKU 为单元素数组 `[{...}]`
+  - 拆分行带 `"SPLIT": "颜色"` 字段
+- **图片容错**：`failedImages` Set 管理加载失败的图片 URL，`onError` 自动加入失败集合
+
+### 后端
+- **路由前缀**：`/api/product-entry/`
+- **主要接口**：
+  | 接口 | 方法 | 说明 |
+  |------|------|------|
+  | `/upload` | POST | 上传文件到 Dify |
+  | `/sheets` | POST | 获取 Sheet 列表 |
+  | `/confirm-sheet` | POST | 确认 Sheet 并触发解析 |
+  | `/parse` | POST | 解析 SKU 数据 |
+  | `/confirm` | POST | 确认录入（提交 SPU/SKU 数据） |
+  | `/completion-info` | POST | 获取补全信息 |
+  | `/confirm-completion` | POST | 确认补全信息并完成录入 |
+  | `/history` | GET | 查询历史记录 |
+  | `/history/:id` | DELETE | 删除历史记录 |
+- **数据库表**：`product_entry_history`（id, file_names, parse_result, confirm_result, sku_count, spu_count, status, username, created_at）
+- **Dify 配置**：`DIFY_PRODUCT_ENTRY_API_KEY`、`DIFY_PRODUCT_ENTRY_API_URL`（.env 配置）
+
+### 关键约束
+- 供应商名称为必填项，未填写时「开始解析」按钮禁用。
+- 已拆分的记录不允许再合并，需先取消拆分。
+- 已合并的 SKU 不可单独删除，需先解散 SPU 组。
+- 文件上传支持 `.xlsx` 和 `.xls` 两种格式。

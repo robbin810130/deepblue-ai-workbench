@@ -1,0 +1,115 @@
+# 深蓝企业智慧中枢软件 (WebOS Pro) 项目总需求文档
+
+## 1. 项目概述
+深蓝企业智慧中枢软件 (原 WebOS Pro) 是一个基于 React + TypeScript 的企业级 Web 应用系统,提供市场洞察、集成预测、客户分析和供应链调度等核心功能模块
+
+## 2. 技术栈
+- 前端框架: React 19 + TypeScript (已升级)
+- 构建工具: Vite
+- UI 样式: Vanilla CSS + Tailwind CSS
+- 图标库: Lucide React
+- API 集成: Dify AI 平台 / Doubao ARK API
+
+## 3. 系统架构
+### 3.1 应用状态管理
+- 登录状态 (login)
+- 系统主界面状态 (system)
+- **多会话并发管理：支持最多 5 个活跃会话，超限时自动踢出最早设备 (Kick Oldest)**
+
+### 3.2 核心模块
+1. 市场洞察 (Market Insight) - 已完成
+2. 客户分析 (Customer Analysis) - 已完成
+3. 营销预测 (Marketing Forecast) - 已完成
+4. 知识库 (Knowledge Base) - 已完成
+5. 合同审核 (Contract Audit) - 已完成
+6. 资质管理 (Qualification Management) - 已完成
+7. 版式对比 (Layout Compare) - 已完成
+8. 物料报价 (Material Quote) - 已完成优化 (对接 PostgreSQL 模拟数据、风控信用画像、物理加工费拆分、重量偏差校验、最早完工期、智能机台排产推荐、ERP订单写入与锁库扣库存)
+9. 美妆研发 (Beauty R&D) - 已完成
+10. 出海营销 (Cross-Border Marketing) - 已完成
+11. 电商生图 (E-commerce Image Generation) - 已完成
+12. 每日推送 (Daily Push) - 已完成
+13. 个人中心 (Profile) - 已完成
+14. 系统操作日志 (Audit Log) - 已完成
+15. 安全与多会话管理 (Security/Session) - 已完成
+16. 权限管理 (Permission) - 已完成
+17. 风险检测 (Risk Detection) - 已完成
+18. 客户名称脱敏管理 (LLM Masking) - 进行中
+19. 数字员工助手 (Digital Employee) - 已完成
+20. 营销分析 (Marketing Analysis) - 已完成
+
+## 4. 当前开发状态
+### 4.1 已完成功能
+- 营销分析模块 (MarketingAnalysisModule) - 已完成
+  - 展示月度与季度销量/销售额数据矩阵，支持横向与纵向滚动。
+  - 优化 Checkbox、SKU 编号、产品名称及合计等固定列的背景和字体样式，统一采用 #252f4a 优雅钢蓝背景（悬浮为 #313d5e），且将 SKU 编号与产品名称字段的字体调整为与合计列相同的 font-bold 和 text-indigo-300，彻底避免黑色死板视觉块，提升暗色玻璃质感主题下的文本可读性。
+  - 前端数据脱敏处理，品牌名称自动模糊为 ** 并在图表中同步脱敏。
+  - 右侧嵌入营销智能助手，连接 Dify AI 工作流进行营销决策与诊断。
+  - 支持手动调整产品名称的列宽，最小限制为 120px，最大限制为 500px，利用拖拽手柄及全局 Document 监听实现平滑列宽伸缩，保证宽字幅显示友好度。
+- 登录界面 (LoginScreen)
+- 系统主界面框架 (SystemInterface)
+  - 动态多窗口管理与标签平滑拖拽
+  - 桌面图标自由拖动与网格对齐
+  - **定制化桌面文件夹：支持右键新建、重命名、删除、应用图标自动回流**
+  - 动态壁纸管理（上传、随机、锁定）
+  - 全屏/窗口态切换与最小化管理
+- 市场洞察模块 (MarketInsightModule)
+  - 产品描述输入
+  - 参考图片上传
+  - AI 分析流式输出
+  - 分析结果展示
+- 个人中心模块 (ProfileModule) - 已完成
+  - 账户安全管理（改密、多会话踢出）
+  - 个人资料管理（姓名、头像、部门、邮箱）
+  - 系统托盘入口与实时资料显示
+- 系统操作日志模块 (AuditLogModule) - 已完成
+  - 全局操作记录（登录、改密、用户/角色管理）
+  - AI 智能体使用追踪（记录输入参数、文件上传、模型调用）
+  - 带分页与模块筛选的日志查看器
+  - 详尽的 JSON 原始数据展示面板
+- 物料报价优化模块 (Material Quote Optimized)
+  - 客户订单 OCR 结构化提取识别
+  - 360° 客户授信与欠款风控抽屉画像
+  - 铜价与加工费 HSL 占比进度分析
+  - 重量核算偏差校验及报警
+  - Earliest Finish Date (EFD) 算法交期评估
+  - 适用生产线负荷多因子打分推荐与排程插单
+  - 数据库事务锁定分配及一键一键同步写入 ERP 正式订单
+
+### 4.2 进行中功能
+- 集成预测模块 (PredictionModule)
+  - SKU月度销售额数据表
+  - SKU季度销售额数据表
+  - 预测数据对比表
+  - 总结展示框
+- 客户名称脱敏管理模块 (LLM Masking)
+  - 数据库特征映射表已创建
+  - 详情参见 require/llm_masking_require.txt
+
+### 4.3 待开发功能
+- 客户分析模块
+- 供应链调度模块
+- 数字员工助手 (Digital Employee) 界面功能已就绪
+
+## 5. API 配置
+### 5.1 Dify API
+- API Key: 存储在 config.ts
+- Base URL: http://39.108.221.22/v1
+- 主要接口:
+  - /files/upload - 文件上传
+  - /workflows/run - 工作流执行
+
+## 6. 代码规范要求
+- 使用 TypeScript 严格类型检查
+- 组件必须使用 export 关键字导出
+- 使用 type 关键字导入类型
+- 遵循 ESLint 和样式规范
+- 统一 of UI/UX 设计风格
+
+## 7. 文档管理
+- 所有模块需求文档存放在 require 文件夹
+- 命名规范: [模块名]_require.txt
+- 开发前必须阅读相关需求文档
+- 开发后及时更新需求文档反映实际情况
+
+- 隐患检测模块：详细需求见 hazard_detection_require.txt

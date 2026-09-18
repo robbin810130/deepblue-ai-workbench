@@ -1,0 +1,153 @@
+# 选品策略模块需求文档 (ProductSelectionStrategyModule)
+
+## 1. 功能描述
+
+选品策略模块是一个 AI 驱动的智能选品对话工具，用户通过输入文字描述并上传附件（图片、文档等），以多轮对话的方式获取 AI 的选品分析与策略建议。系统以 SSE 流式返回分析结果，并持久化保存用户的完整对话历史，支持历史记录的查看与管理。
+
+### 1.1 核心能力
+
+- **多模态输入**：支持纯文本输入，也可附带图片（产品图、竞品截图等）和文档（Excel 报价单、PDF 报告等）。
+- **流式对话**：调用 Dify Chatflow API，以 SSE（Server-Sent Events）方式实时流式返回 AI 分析结果，用户可逐字看到生成过程。
+- **多轮对话**：同一会话内支持连续多轮交互，AI 能理解上下文语境，逐步深入分析选品策略。
+- **历史记录**：自动保存每次会话的完整内容（用户输入 + AI 回复），支持历史会话列表浏览、恢复上下文继续对话、删除历史记录。
+
+### 1.2 典型使用场景
+
+- 用户上传竞品图片，要求 AI 分析产品差异化卖点。
+- 用户上传 Excel 报价单，要求 AI 给出选品价格区间建议。
+- 用户输入目标市场描述，要求 AI 推荐适合的品类方向。
+- 多轮追问：在初次分析基础上，进一步细化某个品类的准入要求、认证需求等。
+
+## 2. 核心流程
+
+### 2.1 对话流程
+
+1. 用户进入选品策略模块，系统加载历史会话列表（侧边栏）。
+2. 用户可点击"新建对话"开始新会话，或选择已有历史会话继续对话。
+3. 用户在输入区输入文字描述（必填），可选择性上传图片/文档附件（选填）。
+4. 点击发送后，前端将文本和文件一并提交至后端。
+5. 后端先处理文件上传（转发至 Dify `/v1/files/upload`，获取 `upload_file_id`），然后携带文本和文件 ID 调用 Dify Chatflow API（`response_mode=streaming`）。
+6. 后端通过 SSE 流式转发 Dify 的响应事件，前端实时渲染 AI 回复内容（Markdown 格式）。
+7. 流式结束后，后端将本轮对话（用户输入 + AI 完整回复）持久化到数据库。
+8. 用户可继续输入，进入下一轮对话。
+
+### 2.2 文件上传流程
+
+1. 用户点击附件按钮或拖拽文件到上传区域。
+2. 前端校验文件类型（图片：jpg/png/gif/webp；文档：pdf/xlsx/docx）和大小限制（单文件 20MB）。
+3. 前端调用后端 `POST /api/product-selection/upload` 上传文件。
+4. 后端接收文件后转发至 Dify `/v1/files/upload`，返回 `upload_file_id`。
+5. 前端将 `upload_file_id` 随对话消息一并发送。
+
+### 2.3 历史记录流程
+
+1. 用户进入模块时，后端返回该用户的会话列表（按最近活跃时间倒序）。
+2. 用户点击某条历史会话，前端加载该会话的全部对话消息。
+3. 用户可在该会话基础上继续对话，新消息追加到当前会话。
+4. 用户可删除某条历史会话，后端级联删除该会话下的所有消息。
+
+## 3. 视觉优化需求
+
+### 3.1 整体布局
+
+- **对话主区域**：顶部显示当前会话标题（支持编辑），中间为消息流区域，底部为输入区。
+- **风格统一**：与 WebOS Pro 整体深色/科技风格保持一致，使用 Tailwind CSS 定制。
+
+### 3.2 消息展示
+
+- **用户消息**：右对齐，平台主色调浅色气泡，圆角 12px，内边距 12px；如有附件，在消息气泡上方展示文件缩略图/文件名卡片。
+- **AI 消息**：左对齐，白色/深灰气泡，带轻微阴影；使用 `ReactMarkdown` + `remarkGfm` + `rehypeRaw` 渲染 Markdown 内容（支持表格、列表、代码块等）。
+- **流式打字效果**：AI 回复逐字/逐段出现，光标闪烁指示生成中。
+- **时间戳**：每条消息气泡下方显示发送时间（12px，浅灰色）。
+
+### 3.3 输入区
+
+- **多行输入框**：支持自动高度扩展（最大 200px），圆角 8px，focus 时边框变为主色调并带发光效果。
+- **附件按钮**：输入框左侧，点击弹出文件选择器，支持多文件选择；已选文件以缩略图/文件名列表形式展示在输入框上方，支持逐个移除。
+- **发送按钮**：输入框右侧，输入为空时禁用态，有内容时为主色调。
+- **停止按钮**：AI 生成过程中，发送按钮替换为停止按钮（方形图标），点击可中断流式响应。
+
+### 3.4 历史会话列表
+
+- **列表项**：显示会话标题（默认取第一轮用户消息前 20 字）和最近活跃时间。
+- **交互**：hover 高亮，active 态左侧显示主色调竖线标识；右键或 hover 显示删除按钮。
+- **新建对话**：列表顶部固定"新建对话"按钮，带 + 图标。
+
+### 3.5 美观性
+
+- 结果框具有现代感，背景、内边距和动画效果与整体 UI 一致。
+- 文件上传区域支持拖拽，拖入时边框高亮 + 图标动画反馈。
+- 加载状态使用极简旋转图标，AI 思考中显示动态指示器。
+
+## 4. 技术实现
+
+### 4.1 前端
+
+- **组件文件**：`src/components/ProductSelectionStrategyModule.tsx`
+- **Markdown 渲染**：`ReactMarkdown` + `remarkGfm` + `rehypeRaw`
+- **SSE 消费**：使用 `fetch` + `ReadableStream` 读取 SSE 事件流，逐块拼接 `answer` 字段，实时更新 state。
+- **文件上传**：`FormData` 上传至后端，获取 `upload_file_id` 后随消息发送。
+- **状态管理**：`useState` / `useRef` 管理会话列表、当前会话 ID、消息列表、流式内容缓冲。
+- **自动滚动**：新消息/流式内容追加时自动滚动到底部。
+- **停止生成**：通过 `AbortController` 中断 fetch 请求，同时调用后端停止接口通知 Dify 停止生成。
+
+### 4.2 后端
+
+- **路由前缀**：`/api/product-selection`
+- **接口设计**：
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/product-selection/upload` | 文件上传中转（文件 → Dify `upload_file_id`） |
+| POST | `/api/product-selection/chat` | 发送对话消息（SSE 流式返回） |
+| POST | `/api/product-selection/stop` | 停止当前流式生成 |
+| GET | `/api/product-selection/conversations` | 获取当前用户的会话列表 |
+| GET | `/api/product-selection/conversations/:id/messages` | 获取某会话的全部消息 |
+| DELETE | `/api/product-selection/conversations/:id` | 删除会话（级联删除消息） |
+| PUT | `/api/product-selection/conversations/:id` | 更新会话标题 |
+
+- **鉴权**：所有接口需 `authenticateToken` 中间件，按 `user_id` 隔离数据。
+- **SSE 流式转发**：后端设置 `text/event-stream` 响应头，使用 `ReadableStream` 从 Dify 逐块读取事件并转发给前端，减少内存占用。
+- **文件参数格式**：传入 Dify 的 `inputs` 中，文件字段必须直接为文件对象数组（`[{type, transfer_method, upload_file_id}]`），不能包裹在 `{value: [...]}` 结构中。
+
+### 4.3 数据库
+
+- **会话表**：`sys_product_selection_conversations`
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | SERIAL PRIMARY KEY | 自增主键 |
+| user_id | INTEGER NOT NULL | 关联 sys_users.id |
+| title | VARCHAR(200) | 会话标题 |
+| created_at | TIMESTAMP DEFAULT NOW() | 创建时间 |
+| updated_at | TIMESTAMP DEFAULT NOW() | 最近活跃时间 |
+
+- **消息表**：`sys_product_selection_messages`
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | SERIAL PRIMARY KEY | 自增主键 |
+| conversation_id | INTEGER NOT NULL | 关联会话表 id |
+| role | VARCHAR(20) NOT NULL | 角色：`user` / `assistant` |
+| content | TEXT | 消息文本内容 |
+| files | JSONB | 附件信息（文件名、类型、Dify file_id、URL 等） |
+| created_at | TIMESTAMP DEFAULT NOW() | 创建时间 |
+
+### 4.4 环境变量
+
+```env
+# 选品策略 - Dify 工作流配置
+DIFY_PRODUCT_SELECTION_API_KEY=your_api_key_here
+DIFY_PRODUCT_SELECTION_API_URL=https://api.dify.ai/v1
+```
+
+### 4.5 前端配置变更
+
+- **`src/config.ts`**：新增 API 端点常量。
+- **`src/types/index.ts`**：`ModuleType` 联合类型新增 `'productSelectionStrategy'`。
+- **`src/config/permissionConfig.ts`**：`APP_META` 中注册模块元信息（label: "选品策略"，category 按业务归属归类）。
+- **`src/components/SystemInterface.tsx`**：添加 `React.lazy()` 动态导入和渲染逻辑。
+
+### 4.6 DDL 初始化
+
+在 `server/server.js` 的 `runInitDDL()` 函数中追加建表语句，服务首次启动时幂等创建 `sys_product_selection_conversations` 和 `sys_product_selection_messages` 表。

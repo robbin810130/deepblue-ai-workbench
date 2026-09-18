@@ -1,0 +1,236 @@
+# 后端服务部署和运行指南
+
+## 快速开始
+
+### 1. 环境准备
+
+确保已安装：
+- Node.js (v14+)
+- Python 3.7+
+- SQL Server ODBC Driver
+
+### 2. 配置数据库连接
+
+复制环境变量示例文件：
+```bash
+cp .env.example .env
+```
+
+编辑 `.env` 文件，填入真实的数据库配置：
+```env
+DB_DRIVER={SQL Server}
+DB_SERVER=your_actual_server_address
+DB_DATABASE=your_actual_database
+DB_UID=your_username
+DB_PWD=your_password
+
+SERVER_PORT=3001
+```
+
+### 3. 安装Python依赖
+
+```bash
+pip install pandas sqlalchemy pyodbc python-dotenv
+```
+
+### 4. 启动服务
+
+**方式一：同时启动前后端（推荐）**
+```bash
+npm run dev:all
+```
+
+**方式二：分别启动**
+```bash
+# 终端1 - 前端
+npm run dev
+
+# 终端2 - 后端
+npm run server
+```
+
+## 服务说明
+
+### 前端服务
+- 地址: http://localhost:5174
+- 功能: React Web界面
+
+### 后端服务
+- 地址: http://localhost:3001
+- 功能: API服务器 + Python脚本执行 + 定时任务
+
+## API接口
+
+### POST /api/update-data
+手动触发数据更新
+
+**请求示例：**
+```bash
+curl -X POST http://localhost:3001/api/update-data
+```
+
+**响应示例：**
+```json
+{
+  "success": true,
+  "message": "数据更新成功",
+  "timestamp": "2026-02-10T17:00:00+08:00"
+}
+```
+
+### GET /api/status
+查询更新状态
+
+**请求示例：**
+```bash
+curl http://localhost:3001/api/status
+```
+
+**响应示例：**
+```json
+{
+  "lastUpdate": "2026-02-10 17:00:00",
+  "status": "success",
+  "message": "数据更新成功",
+  "isRunning": false,
+  "nextUpdate": "2026-02-10T18:00:00+08:00"
+}
+```
+
+### GET /api/health
+健康检查
+
+## 定时任务
+
+后端服务器已配置自动定时任务：
+- **执行频率**: 每小时一次
+- **执行时间**: 每小时的整点（如 09:00, 10:00, 11:00）
+- **任务内容**: 执行Python脚本更新数据
+
+### 修改定时频率
+
+编辑 `server.js` 第153行的cron表达式：
+
+```javascript
+// 当前：每小时执行
+cron.schedule('0 * * * *', () => { ... });
+
+// 改为每30分钟执行
+cron.schedule('*/30 * * * *', () => { ... });
+
+// 改为每天凌晨2点执行
+cron.schedule('0 2 * * *', () => { ... });
+```
+
+## 生产环境部署
+
+### 使用PM2部署
+
+1. **安装PM2**
+```bash
+npm install -g pm2
+```
+
+2. **启动后端服务**
+```bash
+pm2 start server.js --name "web-os-api"
+```
+
+3. **启动前端（构建后）**
+```bash
+npm run build
+pm2 serve dist 5174 --name "web-os-frontend"
+```
+
+4. **设置开机自启**
+```bash
+pm2 startup
+pm2 save
+```
+
+5. **查看日志**
+```bash
+pm2 logs web-os-api
+```
+
+### 使用Windows服务
+
+可以使用 `node-windows` 将后端注册为Windows服务：
+
+```bash
+npm install -g node-windows
+```
+
+## 故障排查
+
+### 问题1: Python脚本执行失败
+
+**症状**: 后端日志显示"无法启动Python"
+
+**解决方案**:
+1. 确认Python在系统PATH中：`python --version`
+2. Windows可能需要使用完整路径：修改server.js中的`spawn('python', ...)`为`spawn('python.exe', ...)`
+
+### 问题2: 数据库连接失败
+
+**症状**: Python脚本报错"连接超时"
+
+**解决方案**:
+1. 检查`.env`文件配置是否正确
+2. 确认SQL Server允许远程连接
+3. 检查防火墙设置
+
+### 问题3: 前端无法调用后端API
+
+**症状**: 控制台显示CORS错误
+
+**解决方案**:
+1. 确认后端服务已启动（http://localhost:3001/api/health）
+2. 检查`src/config.ts`中的`API_BASE_URL`配置
+3. 如果端口冲突，修改`.env`中的`SERVER_PORT`
+
+### 问题4: JSON文件未更新
+
+**症状**: 前端显示旧数据
+
+**解决方案**:
+1. 检查后端日志，确认文件移动成功
+2. 清除浏览器缓存（Ctrl+Shift+R）
+3. 检查`public/sales_analysis_matrix.json`文件时间戳
+
+## 监控和维护
+
+### 日志管理
+
+**后端日志**:
+- 启动信息显示在控制台
+- 每次更新任务都有详细日志
+
+**前端日志**:
+- 浏览器控制台查看
+- 查看Network标签监控API调用
+
+### 性能监控
+
+建议监控以下指标：
+- Python脚本执行时间
+- 数据库查询响应时间
+- API请求延迟
+- 内存占用
+
+## 安全建议
+
+1. **生产环境**:
+   - 不要将`.env`文件提交到版本控制
+   - 使用环境变量或密钥管理服务
+   - 配置HTTPS
+
+2. **API安全**:
+   - 添加认证中间件
+   - 限流保护
+   - 日志审计
+
+3. **数据库**:
+   - 使用只读账号查询
+   - 定期更新密码
+   - 启用SSL连接

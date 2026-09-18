@@ -1,0 +1,3000 @@
+#root {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 2rem;
+  text-align: center;
+}
+.logo {
+  height: 6em;
+  padding: 1.5em;
+  will-change: filter;
+  transition: filter 300ms;
+}
+.logo:hover {
+  filter: drop-shadow(0 0 2em #646cffaa);
+}
+.logo.react:hover {
+  filter: drop-shadow(0 0 2em #61dafbaa);
+}
+@keyframes logo-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  a:nth-of-type(2) .logo {
+    animation: logo-spin infinite 20s linear;
+  }
+}
+.card {
+  padding: 2em;
+}
+.read-the-docs {
+  color: #888;
+}
+import { useState, useEffect } from 'react';
+import type { AppState } from './types';
+import { LoginScreen } from './components/LoginScreen';
+import { SystemInterface } from './components/SystemInterface';
+import { SystemConfigCenter } from './components/SystemConfigCenter';
+import { RoleProvider } from './context/RoleContext';
+export default function WebOSApp() {
+  const [appState, setAppState] = useState<AppState>(() => {
+    return localStorage.getItem('blue_os_token') ? 'system' : 'login';
+  });
+  const [username, setUsername] = useState(() => {
+    const token = localStorage.getItem('blue_os_token');
+    if (token) {
+      try {
+        const payload = JSON.parse(atob(token.split('.')[1]));
+        return payload.username || '';
+      } catch (e) {
+        return '';
+      }
+    }
+    return '';
+  });
+  const handleLoginSuccess = (user: string) => {
+    setUsername(user);
+    setAppState('system');
+  };
+  const handleLogout = async () => {
+    try {
+      // 携带 Token 调用后端登出，吊销 JTI
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('blue_os_token')}` }
+      });
+    } catch (e) {
+      console.warn('Logout API call failed', e);
+    }
+    setAppState('login');
+    setUsername('');
+    localStorage.removeItem('blue_os_token');
+  };
+  // 全局侦听 Token 失效
+  useEffect(() => {
+    const handleUnauthorized = () => {
+      handleLogout();
+    };
+    window.addEventListener('auth-unauthorized', handleUnauthorized);
+    return () => window.removeEventListener('auth-unauthorized', handleUnauthorized);
+  }, []);
+    // 已移除：此处原本存在的 beforeunload 登出信标会导致在多标签页下关闭一个标签页时，或者刷新页面时，误杀所有处于同一会话的登录状态。
+  return (
+    <div className="w-full h-screen bg-slate-50 overflow-hidden font-sans text-slate-800">
+      {appState === 'login' ? (
+        <LoginScreen onLogin={handleLoginSuccess} />
+      ) : appState === 'system' ? (
+        <RoleProvider>
+          <SystemInterface username={username} onLogout={handleLogout} onEnterAdmin={() => setAppState('sysadmin')} />
+        </RoleProvider>
+      ) : (
+        <SystemConfigCenter username={username} onExit={() => setAppState('system')} onLogout={handleLogout} />
+      )}
+    </div>
+  );
+}
+import React, { useState, useRef, useCallback, useEffect } from 'react';
+import {
+    UploadCloud, X, Sparkles, Loader2, ZoomIn,
+    Image as ImagePlaceholder, ChevronRight, ChevronDown, Check, Send, RefreshCw,
+    Info, Download, ImageIcon
+} from 'lucide-react';
+import { fetchWithAuth } from '../utils/authFetch';
+import { useConfig } from '../hooks/useConfig';
+import { sysAlert } from '../utils/dialog';
+const MAX_REFS = 5;
+// 分辨率 × 比例 → 像素尺寸查找表
+const SIZE_MAP: Record<'2K' | '4K', Record<string, string>> = {
+    '2K': {
+        '1:1': '2048x2048', '4:3': '2304x1728', '3:4': '1728x2304',
+        '16:9': '2848x1600', '9:16': '1600x2848', '3:2': '2496x1664',
+        '2:3': '1664x2496', '21:9': '3136x1344',
+    },
+    '4K': {
+        '1:1': '4096x4096', '4:3': '4704x3520', '3:4': '3520x4704',
+        '16:9': '5504x3040', '9:16': '3040x5504', '3:2': '4992x3328',
+        '2:3': '3328x4992', '21:9': '6240x2656',
+    },
+};
+const MODELS = [
+    { label: 'doubao-seedream-4.0', value: 'doubao-seedream-4-0-250828', disabled: false },
+    { label: 'doubao-seedream-4.5', value: 'doubao-seedream-4-5-251128', disabled: false },
+    { label: 'Nano Banana', value: 'nano-banana', disabled: true },
+    { label: 'Gemini 3.1 Flash Image', value: 'gemini-3.1-flash', disabled: true },
+];
+const ASPECT_RATIOS = ['1:1', '4:3', '3:4', '16:9', '9:16', '3:2', '2:3', '21:9'] as const;
+type AspectRatio = typeof ASPECT_RATIOS[number];
+export interface AIScene {
+    id: string;
+    label: string;
+    emoji: string;
+    desc: string;
+    fields: {
+        id: string;
+        label: string;
+        options: string[];
+    }[];
+}
+interface RefImage { id: string; file: File; preview: string; }
+interface GeneratedImage { id: string; url: string; label: string; }
+interface ChatMessage { role: 'user' | 'assistant'; content: string; images?: GeneratedImage[]; }
+interface MatchResult {
+    id: string; name: string; brand: string; category: string;
+    subcategory: string; color_name: string; finish: string;
+    tags: string[]; image: string; similarity: number;
+}
+// 图源模式：'ref' 使用原始参考图，'generated' 使用上次生成的图
+type ImageSourceMode = 'ref' | 'generated';
+export const AIImageModule: React.FC = () => {
+    // --- 动态配置库数据 ---
+    const { data: aiScenes, loading: isScenesLoading } = useConfig<AIScene>('ai_scenes');
+    const [isReady, setIsReady] = useState(false);
+    // --- 场景 & 选项 ---
+    const [selectedScene, setSelectedScene] = useState<string>('text_to_image');
+    const [selectedSubOptions, setSelectedSubOptions] = useState<Record<string, string>>({});
+    // --- 参考图 ---
+    const [refImages, setRefImages] = useState<RefImage[]>([]);
+    const [dragOver, setDragOver] = useState(false);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    // --- 对话历史 ---
+    const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+    const [prompt, setPrompt] = useState('');
+    const chatEndRef = useRef<HTMLDivElement>(null);
+    // --- 图源选择（多轮对话专用） ---
+    const [imageSourceMode, setImageSourceMode] = useState<ImageSourceMode>('ref');
+    // --- 智能匹配结果 ---
+    const [matchResults, setMatchResults] = useState<MatchResult[]>([]);
+    const [matchAnalysis, setMatchAnalysis] = useState<any>(null);
+    // --- 生成状态 ---
+    const [isGenerating, setIsGenerating] = useState(false);
+    const [generatingStatus, setGeneratingStatus] = useState('');
+    const [generateError, setGenerateError] = useState('');
+    // --- 图片设置 ---
+    const [imageResolution, setImageResolution] = useState<'2K' | '4K'>('2K');
+    const [aspectRatio, setAspectRatio] = useState<AspectRatio>('1:1');
+    const pixelSize = SIZE_MAP[imageResolution][aspectRatio];
+    // --- 大图预览 ---
+    const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+    // --- 模型选择 ---
+    const [selectedModel, setSelectedModel] = useState<string>(MODELS[0].value);
+    const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
+    const modelMenuRef = useRef<HTMLDivElement>(null);
+    // 点击外部自动收起模型菜单
+    useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+            if (modelMenuRef.current && !modelMenuRef.current.contains(event.target as Node)) {
+                setIsModelMenuOpen(false);
+            }
+        };
+        if (isModelMenuOpen) {
+            document.addEventListener('mousedown', handleClickOutside);
+        }
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, [isModelMenuOpen]);
+    // 渲染钩子防跃迁闪烁
+    useEffect(() => {
+        if (!isScenesLoading) {
+            requestAnimationFrame(() => {
+                setTimeout(() => setIsReady(true), 50);
+            });
+        }
+    }, [isScenesLoading]);
+    // 当切换场景或选项时，自动把向导生成的 prompt 填入输入框
+    useEffect(() => {
+        const scene = aiScenes.find(s => s.id === selectedScene);
+        if (!scene) return;
+        let newPrompt = "";
+        scene.fields.forEach(f => {
+            const val = selectedSubOptions[f.id];
+            if (val) {
+                newPrompt += `- ${f.label}：${val}\n`;
+            }
+        });
+        setPrompt(newPrompt.trim());
+    }, [selectedScene, selectedSubOptions]);
+    // 消息自动滚动到底部
+    useEffect(() => {
+        chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, [chatHistory, isGenerating]);
+    // --- 文件操作 ---
+    const addFiles = useCallback((files: FileList | File[]) => {
+        const arr = Array.from(files);
+        const validTypes = ['image/jpeg', 'image/png', 'image/jpg', 'image/webp', 'image/gif'];
+        const newImages: RefImage[] = [];
+        for (const f of arr) {
+            if (refImages.length + newImages.length >= MAX_REFS) { sysAlert(`最多只能上传 ${MAX_REFS} 张参考图`); break; }
+            if (!validTypes.includes(f.type)) { sysAlert(`文件 "${f.name}" 格式不支持`); continue; }
+            if (f.size > 10 * 1024 * 1024) { sysAlert(`文件 "${f.name}" 超过 10MB`); continue; }
+            newImages.push({ id: `${Date.now()}-${Math.random()}`, file: f, preview: URL.createObjectURL(f) });
+        }
+        setRefImages(prev => [...prev, ...newImages]);
+    }, [refImages]);
+    const removeRefImage = (id: string) => {
+        setRefImages(prev => {
+            const img = prev.find(i => i.id === id);
+            if (img) URL.revokeObjectURL(img.preview);
+            return prev.filter(i => i.id !== id);
+        });
+    };
+    // 取最近一轮 AI 生成的图片列表
+    const latestGeneratedImages: GeneratedImage[] = [...chatHistory]
+        .reverse()
+        .find(m => m.role === 'assistant' && m.images && m.images.length > 0)?.images || [];
+    // 是否有可用的生成图，决定是否展示图源选择器
+    const hasGeneratedImages = latestGeneratedImages.length > 0;
+    // --- 智能匹配逻辑 ---
+    const handleSmartMatch = async () => {
+        if (refImages.length === 0) {
+            sysAlert('请上传一张产品图用于智能匹配'); return;
+        }
+        setIsGenerating(true);
+        setGeneratingStatus('AI 正在分析图片并检索数据库...');
+        setGenerateError('');
+        setMatchResults([]);
+        setMatchAnalysis(null);
+        try {
+            const formData = new FormData();
+            formData.append('image', refImages[0].file);
+            if (selectedSubOptions['category']) formData.append('category', selectedSubOptions['category']);
+            if (selectedSubOptions['color_name']) formData.append('color_name', selectedSubOptions['color_name']);
+            if (selectedSubOptions['finish']) formData.append('finish', selectedSubOptions['finish']);
+            const response = await fetchWithAuth('/api/smart-match', { method: 'POST', body: formData });
+            if (!response.ok) {
+                const err = await response.json().catch(() => ({ error: '请求失败' }));
+                throw new Error(err.error || `HTTP ${response.status}`);
+            }
+            const data = await response.json();
+            if (data.success) {
+                setMatchResults(data.results);
+                setMatchAnalysis(data.aiAnalysis);
+                setGeneratingStatus('');
+                setChatHistory(prev => [...prev, {
+                    role: 'assistant',
+                    content: `✅ 智能匹配完成。为您找到 ${data.results.length} 个相似产品。（AI分析：${data.aiAnalysis.category || '未识别'} / ${data.aiAnalysis.color_name || '未识别'}）`
+                }]);
+                // 通知菜单栏：后台任务完成
+                window.dispatchEvent(new CustomEvent('app-task-done', { detail: { appId: 'aiimage' } }));
+            } else {
+                throw new Error('匹配结果解析失败');
+            }
+        } catch (err: any) {
+            console.error('[智能匹配] 出错:', err);
+            setGenerateError(err.message || '匹配失败，请重试');
+            setGeneratingStatus('');
+        } finally {
+            setIsGenerating(false);
+        }
+    };
+    // --- 生成逻辑 ---
+    const handleGenerate = async () => {
+        if (selectedScene === 'smart_match') {
+            await handleSmartMatch();
+            return;
+        }
+        const isFirstRound = chatHistory.length === 0;
+        const isTextToImage = selectedScene === 'text_to_image';
+        // 文字出图逻辑
+        if (!isTextToImage) {
+            // 其他功能：首轮必须有参考图
+            if (isFirstRound && refImages.length === 0) {
+                sysAlert('请至少上传一张参考图后再生成'); return;
+            }
+            if (!isFirstRound && imageSourceMode === 'ref' && refImages.length === 0) {
+                sysAlert('请至少上传一张参考图后再生成'); return;
+            }
+        }
+        if (!prompt.trim()) { sysAlert('请填写提示词后再生成'); return; }
+        const userMsg = prompt.trim();
+        setChatHistory(prev => [...prev, { role: 'user', content: userMsg }]);
+        setPrompt('');
+        setIsGenerating(true);
+        setGeneratingStatus('正在连接生成服务...');
+        setGenerateError('');
+        // 构造完整的系统指令（后台拼接）
+        const scene = aiScenes.find(s => s.id === selectedScene);
+        const prefix = scene ? `作为专业电商美工，请根据参考图执行【${scene.label}】操作。\n具体要求如下：\n` : "";
+        const suffix = `\n其他要求：请确保光线自然、细节清晰、无多余文字水印、色彩质感真实、无畸变、符合商品实拍标准。`;
+        // 构建带上下文的最终 prompt
+        const finalPrompt = !isFirstRound
+            ? `【历史对话参考】\n${chatHistory.filter(m => m.role === 'user').map(m => m.content).join('\n---\n')}\n\n【本次修改要求】\n${userMsg}`
+            : (isSmartMatch ? userMsg : `${prefix}${userMsg}${suffix}`);
+        try {
+            const formData = new FormData();
+            formData.append('prompt', finalPrompt);
+            formData.append('size', pixelSize);
+            formData.append('model', selectedModel);
+            console.log('[AIImageModule] handleGenerate - Current Model:', selectedModel);
+            if (!isFirstRound && imageSourceMode === 'generated' && latestGeneratedImages.length > 0) {
+                // 使用上次生成的最后一张图（fetch 为 Blob）
+                setGeneratingStatus('正在获取上次生成的图片...');
+                const lastImg = latestGeneratedImages[latestGeneratedImages.length - 1];
+                const imgResp = await fetch(lastImg.url);
+                const blob = await imgResp.blob();
+                formData.append('images', blob, 'generated.jpg');
+            } else if (refImages.length > 0) {
+                // 使用原始参考图（文字出图无图时跳过）
+                refImages.forEach(img => formData.append('images', img.file));
+            }
+            const response = await fetchWithAuth('/api/generate-image', { method: 'POST', body: formData });
+            if (!response.ok) {
+                const err = await response.json().catch(() => ({ error: '请求失败' }));
+                throw new Error(err.error || `HTTP ${response.status}`);
+            }
+            const reader = response.body!.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let imageCount = 0;
+            const roundImages: GeneratedImage[] = [];
+            setGeneratingStatus('AI 正在创作中，请稍候...');
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+                for (const line of lines) {
+                    if (!line.startsWith('data: ')) continue;
+                    const jsonStr = line.slice(6).trim();
+                    if (!jsonStr) continue;
+                    try {
+                        const event = JSON.parse(jsonStr);
+                        if (event.type === 'partial' && event.url) {
+                            imageCount++;
+                            setGeneratingStatus(`已生成第 ${imageCount} 张，继续生成中...`);
+                            roundImages.push({ id: `gen-${Date.now()}-${imageCount}`, url: event.url, label: `生成图片 ${imageCount}` });
+                        } else if (event.type === 'complete') {
+                            setGeneratingStatus(`✅ 全部完成，共 ${event.total} 张`);
+                        } else if (event.type === 'error') {
+                            throw new Error(event.message);
+                        }
+                    } catch (parseErr: any) {
+                        if (parseErr.message && !parseErr.message.includes('JSON')) throw parseErr;
+                    }
+                }
+            }
+            if (imageCount === 0) {
+                setGeneratingStatus('未生成任何图片，请检查参考图或重试');
+                setChatHistory(prev => [...prev, { role: 'assistant', content: '⚠️ 本轮未生成任何图片，请检查参考图和提示词后重试。', images: [] }]);
+            } else {
+                const sourceTip = (!isFirstRound && imageSourceMode === 'generated')
+                    ? '（基于上次生成图进行的修改）'
+                    : '';
+                setChatHistory(prev => [...prev, {
+                    role: 'assistant',
+                    content: `✅ 本轮共生成 ${imageCount} 张图片${sourceTip}。如需继续调整，请在下方输入修改意见。`,
+                    images: roundImages
+                }]);
+                // 通知菜单栏：后台任务完成
+                window.dispatchEvent(new CustomEvent('app-task-done', { detail: { appId: 'aiimage' } }));
+            }
+        } catch (err: any) {
+            console.error('[电商生图] 出错:', err);
+            const errMsg = err.message || '生成失败，请重试';
+            setGenerateError(errMsg);
+            setGeneratingStatus('');
+            setChatHistory(prev => [...prev, { role: 'assistant', content: `❌ 生成出错：${errMsg}`, images: [] }]);
+        } finally {
+            setIsGenerating(false);
+        }
+    };
+    const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) handleGenerate();
+    };
+    const currentScene = aiScenes.find(s => s.id === selectedScene);
+    const isFirstRound = chatHistory.length === 0;
+    const isTextToImage = selectedScene === 'text_to_image';
+    const isSmartMatch = selectedScene === 'smart_match';
+    let canGenerate = false;
+    if (isSmartMatch) {
+        canGenerate = refImages.length > 0 && !isGenerating;
+    } else {
+        const promptIsValid = prompt.trim().length > 0;
+        const imagesReady = isTextToImage
+            ? true  // 文字出图无需参考图
+            : (isFirstRound ? refImages.length > 0 : (imageSourceMode === 'ref' ? refImages.length > 0 : hasGeneratedImages));
+        canGenerate = promptIsValid && !isGenerating && imagesReady;
+    }
+    const latestImages = latestGeneratedImages;
+    if (!isReady) return null;
+    return (
+        <div className="h-full flex min-h-0 overflow-hidden bg-slate-50">
+            {/* ======================= 左侧：场景菜单栏 ======================= */}
+            <aside className="w-[400px] shrink-0 h-full flex flex-col bg-white border-r border-slate-100 shadow-sm overflow-hidden">
+                {/* 顶部参考图上传 */}
+                <div className="p-3 border-b border-slate-100">
+                    <p className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-2 px-1">参考图上传</p>
+                    <input ref={fileInputRef} type="file" className="hidden" accept="image/*" multiple
+                        onChange={e => { if (e.target.files) { addFiles(e.target.files); e.target.value = ''; } }} />
+                    {refImages.length < MAX_REFS && (
+                        <div
+                            onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+                            onDragLeave={() => setDragOver(false)}
+                            onDrop={e => { e.preventDefault(); setDragOver(false); if (e.dataTransfer.files) addFiles(e.dataTransfer.files); }}
+                            onClick={() => fileInputRef.current?.click()}
+                            className={`border-2 border-dashed rounded-xl p-3 flex flex-col items-center justify-center cursor-pointer transition-all text-center
+                                ${dragOver ? 'border-violet-500 bg-violet-50' : 'border-slate-200 hover:border-violet-400 hover:bg-violet-50/40'}`}
+                        >
+                            <UploadCloud className={`w-5 h-5 mb-1 ${dragOver ? 'text-violet-600' : 'text-slate-400'}`} />
+                            <p className="text-sm text-slate-500 leading-snug">点击或拖拽上传<br /><span className="text-slate-400">最多 {MAX_REFS} 张</span></p>
+                        </div>
+                    )}
+                    {refImages.length > 0 && (
+                        <div className="grid grid-cols-3 gap-1 mt-2">
+                            {refImages.map(img => (
+                                <div key={img.id} className="relative group aspect-square rounded-lg overflow-hidden border border-slate-200">
+                                    <img src={img.preview} alt={img.file.name} className="w-full h-full object-cover" />
+                                    <button type="button"
+                                        onClick={e => { e.stopPropagation(); removeRefImage(img.id); }}
+                                        className="absolute top-0.5 right-0.5 w-4 h-4 bg-red-500 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity shadow">
+                                        <X className="w-2.5 h-2.5" />
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+                {/* 场景菜单列表 */}
+                <div className="flex-1 overflow-y-auto p-2">
+                    <p className="text-sm font-bold text-slate-500 uppercase tracking-wider mb-2 px-1 pt-1">功能选择</p>
+                    <nav className="flex flex-col gap-1">
+                        {aiScenes.map(scene => (
+                            <button
+                                key={scene.id}
+                                onClick={() => { setSelectedScene(scene.id); setSelectedSubOptions({}); }}
+                                className={`w-full text-left px-3 py-3 rounded-xl transition-all group relative flex items-start gap-2.5
+                                    ${selectedScene === scene.id
+                                        ? 'bg-violet-600 text-white shadow-md shadow-violet-300'
+                                        : 'text-slate-600 hover:bg-violet-50 hover:text-violet-700'}`}
+                            >
+                                <span className="text-base shrink-0 leading-snug">{scene.emoji}</span>
+                                <div className="min-w-0">
+                                    <p className="text-base font-semibold leading-snug">{scene.label}</p>
+                                    <p className={`text-sm leading-snug mt-0.5 ${selectedScene === scene.id ? 'text-violet-200' : 'text-slate-400'}`}>{scene.desc}</p>
+                                </div>
+                                {selectedScene === scene.id && <ChevronRight className="w-3.5 h-3.5 ml-auto shrink-0 mt-0.5 text-violet-200" />}
+                            </button>
+                        ))}
+                    </nav>
+                </div>
+                {/* 底部：分辨率 & 比例 */}
+                <div className="p-3 border-t border-slate-100 flex flex-col gap-2">
+                    <div>
+                        <p className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-1">分辨率</p>
+                        <div className="flex gap-1">
+                            {(['2K', '4K'] as const).map(r => (
+                                <button key={r} onClick={() => setImageResolution(r)}
+                                    className={`flex-1 py-2 text-sm font-bold rounded-lg border transition-all
+                                        ${imageResolution === r ? 'bg-violet-600 border-violet-600 text-white' : 'border-slate-200 text-slate-500 hover:border-violet-400'}`}>
+                                    {r}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                    <div>
+                        <p className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-1">比例 <span className="font-mono text-violet-600 ml-1">{aspectRatio}</span></p>
+                        <div className="grid grid-cols-4 gap-1">
+                            {ASPECT_RATIOS.map(r => (
+                                <button key={r} onClick={() => setAspectRatio(r)}
+                                    className={`py-1.5 text-sm font-semibold rounded border transition-all
+                                        ${aspectRatio === r ? 'bg-violet-600 border-violet-600 text-white' : 'border-slate-200 text-slate-500 hover:border-violet-400'}`}>
+                                    {r}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                    <p className="text-center text-sm text-violet-500 font-mono bg-violet-50 rounded-lg px-2 py-2">{pixelSize}</p>
+                </div>
+            </aside>
+            {/* ======================= 中间：图片结果展示 ======================= */}
+            <main className="flex-1 min-w-0 h-full flex flex-col overflow-hidden bg-slate-50">
+                {/* 顶部标题栏 */}
+                <div className="shrink-0 px-6 py-4 bg-white border-b border-slate-100 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                        <Sparkles className="w-5 h-5 text-violet-600" />
+                        <span className="font-bold text-slate-800 text-lg">电商 AI 生图</span>
+                        {currentScene && (
+                            <span className="text-sm px-3 py-1 bg-violet-100 text-violet-700 rounded-full font-semibold">
+                                {currentScene.emoji} {currentScene.label}
+                            </span>
+                        )}
+                    </div>
+                    {/* 模型选择：自定义高级下拉组件 */}
+                    <div className="relative" ref={modelMenuRef}>
+                        <button
+                            onClick={() => setIsModelMenuOpen(!isModelMenuOpen)}
+                            className={`flex items-center gap-4 px-4 py-2.5 rounded-2xl border transition-all duration-300 group
+                                ${isModelMenuOpen
+                                    ? 'bg-white border-violet-400 shadow-lg shadow-violet-100 ring-2 ring-violet-50'
+                                    : 'bg-slate-50 border-slate-200 hover:border-violet-300 hover:bg-white hover:shadow-md'}`}
+                        >
+                            <label className="text-sm font-bold text-slate-400 group-hover:text-slate-500 transition-colors pointer-events-none">模型选择</label>
+                            <div className="flex items-center gap-2">
+                                <span className={`text-sm font-bold transition-colors ${isModelMenuOpen ? 'text-violet-600' : 'text-slate-700'}`}>
+                                    {MODELS.find(m => m.value === selectedModel)?.label}
+                                </span>
+                                <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform duration-300 ${isModelMenuOpen ? 'rotate-180 text-violet-500' : 'group-hover:text-slate-600'}`} />
+                            </div>
+                        </button>
+                        {/* 下拉菜单面板 */}
+                        {isModelMenuOpen && (
+                            <div className="absolute top-full right-0 mt-3 w-72 bg-white/95 backdrop-blur-xl rounded-2xl border border-slate-200 shadow-2xl overflow-hidden z-[60] animate-in fade-in zoom-in-95 duration-200 origin-top-right">
+                                <div className="p-2 flex flex-col gap-1">
+                                    {MODELS.map(m => {
+                                        const isSelected = selectedModel === m.value;
+                                        return (
+                                            <button
+                                                key={m.value}
+                                                disabled={m.disabled}
+                                                onClick={() => {
+                                                    if (!m.disabled) {
+                                                        setSelectedModel(m.value);
+                                                        setIsModelMenuOpen(false);
+                                                    }
+                                                }}
+                                                className={`flex items-center justify-between px-3 py-3 rounded-xl transition-all duration-200 group/item
+                                                    ${isSelected
+                                                        ? 'bg-violet-600 text-white shadow-md shadow-violet-200'
+                                                        : m.disabled
+                                                            ? 'opacity-40 cursor-not-allowed bg-transparent'
+                                                            : 'text-slate-600 hover:bg-violet-50 hover:text-violet-700'}`}
+                                            >
+                                                <div className="flex flex-col items-start gap-0.5">
+                                                    <span className="text-sm font-bold leading-none">{m.label}</span>
+                                                    {m.disabled && <span className="text-[10px] font-medium opacity-80">当前版本暂不可选</span>}
+                                                </div>
+                                                {isSelected && <Check className="w-4 h-4 text-white" />}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                    {latestImages.length > 0 && (
+                        <span className="text-xs text-slate-400">{latestImages.length} 张最新结果</span>
+                    )}
+                </div>
+                {/* 图片画廊 */}
+                <div className="flex-1 overflow-y-auto p-4">
+                    {isGenerating && latestImages.length === 0 ? (
+                        <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-4 min-h-[300px]">
+                            <div className="w-16 h-16 rounded-full border-4 border-violet-100 border-t-violet-500 animate-spin" />
+                            <p className="text-sm font-medium text-slate-500">{generatingStatus || 'AI 正在创作中...'}</p>
+                            <p className="text-xs text-slate-400">这需要约 10-30 秒，请耐心等待</p>
+                        </div>
+                    ) : latestImages.length > 0 ? (
+                        <>
+                            <div className="grid grid-cols-2 xl:grid-cols-3 gap-3">
+                                {latestImages.map(img => (
+                                    <div key={img.id}
+                                        className="relative group aspect-square rounded-xl overflow-hidden border border-slate-200 shadow-sm cursor-pointer hover:shadow-md hover:border-violet-300 transition-all"
+                                        onClick={() => setLightboxUrl(img.url)}>
+                                        <img src={img.url} alt={img.label} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-all flex items-center justify-center gap-2">
+                                            <ZoomIn className="w-6 h-6 text-white opacity-0 group-hover:opacity-100 transition-opacity drop-shadow-lg" />
+                                            <a href={img.url} download={`generated-${img.id}.jpg`}
+                                                onClick={e => e.stopPropagation()}
+                                                className="w-7 h-7 rounded-full bg-white/20 backdrop-blur flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                                                <Download className="w-3.5 h-3.5 text-white" />
+                                            </a>
+                                        </div>
+                                    </div>
+                                ))}
+                                {isGenerating && (
+                                    <div className="aspect-square rounded-xl border-2 border-dashed border-violet-300 bg-violet-50 flex items-center justify-center">
+                                        <Loader2 className="w-6 h-6 text-violet-400 animate-spin" />
+                                    </div>
+                                )}
+                            </div>
+                            {generatingStatus && (
+                                <p className="text-center text-xs text-violet-500 mt-3">{generatingStatus}</p>
+                            )}
+                        </>
+                    ) : (isSmartMatch && matchResults.length > 0) ? (
+                        <div className="flex flex-col gap-4">
+                            {matchAnalysis && (
+                                <div className="bg-violet-50 p-3 rounded-xl border border-violet-100 flex items-start gap-3 text-sm">
+                                    <Sparkles className="w-4 h-4 text-violet-500 mt-0.5 shrink-0" />
+                                    <div>
+                                        <p className="font-semibold text-violet-800 mb-1">AI 视觉分析结果</p>
+                                        <p className="text-violet-600">类型：{matchAnalysis.category || '-'} / {matchAnalysis.subcategory || '-'}</p>
+                                        <p className="text-violet-600">颜色：{matchAnalysis.color_name || '-'} | 质地：{matchAnalysis.finish || '-'}</p>
+                                        <p className="text-violet-600">标签：{matchAnalysis.tags?.join(', ') || '-'}</p>
+                                    </div>
+                                </div>
+                            )}
+                            <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+                                {matchResults.map((item, idx) => (
+                                    <div key={item.id} className="bg-white rounded-xl overflow-hidden border border-slate-200 shadow-sm hover:shadow-md transition-shadow">
+                                        <img src={item.image} alt={item.name} className="w-full aspect-square object-cover" />
+                                        <div className="p-3">
+                                            <div className="flex justify-between items-start mb-1">
+                                                <p className="font-bold text-slate-800 line-clamp-1">{item.name}</p>
+                                                <span className={`text-xs px-1.5 py-0.5 rounded font-mono font-bold
+                                                    ${idx === 0 ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-500'}`}>
+                                                    {item.similarity}%
+                                                </span>
+                                            </div>
+                                            <p className="text-xs text-slate-500 mb-2">{item.brand} · {item.color_name}</p>
+                                            <div className="flex flex-wrap gap-1">
+                                                {item.tags.slice(0, 3).map(t => (
+                                                    <span key={t} className="text-[10px] bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded">{t}</span>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="h-full flex flex-col items-center justify-center text-slate-300 gap-4 min-h-[300px]">
+                            <div className="w-28 h-28 rounded-3xl bg-white border-2 border-dashed border-slate-200 flex items-center justify-center shadow-sm">
+                                <ImagePlaceholder className="w-10 h-10 text-slate-200" />
+                            </div>
+                            <div className="text-center">
+                                <p className="text-sm font-medium text-slate-400">暂无生成结果</p>
+                                <p className="text-xs text-slate-300 mt-1">选择功能场景，上传参考图，<br />在右侧填写需求后点击发送</p>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </main>
+            {/* ======================= 右侧：关键词选择 + 对话框 ======================= */}
+            <aside className="w-[500px] shrink-0 h-full flex flex-col bg-white border-l border-slate-100 shadow-sm overflow-hidden">
+                {/* 上半：快捷生成向导 */}
+                <div className="flex-[0_0_auto] max-h-[50%] flex flex-col border-b border-slate-100">
+                    <div className="px-4 py-3 bg-slate-50 border-b border-slate-100 flex items-center gap-2 shrink-0">
+                        <Info className="w-3.5 h-3.5 text-violet-500" />
+                        <span className="text-base font-bold text-slate-600">快捷生成向导</span>
+                        {currentScene && (
+                            <span className="ml-auto text-sm text-slate-400">{currentScene.emoji} {currentScene.label}</span>
+                        )}
+                    </div>
+                    <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-3">
+                        {currentScene?.fields.map(field => (
+                            <div key={field.id}>
+                                <p className="text-sm font-semibold text-slate-500 mb-2">{field.label}</p>
+                                <div className="flex flex-wrap gap-1.5">
+                                    {field.options.map(opt => {
+                                        const isSelected = selectedSubOptions[field.id] === opt;
+                                        return (
+                                            <button
+                                                key={opt}
+                                                onClick={() => setSelectedSubOptions(prev => ({
+                                                    ...prev,
+                                                    [field.id]: isSelected ? '' : opt
+                                                }))}
+                                                className={`px-3 py-2 rounded-lg text-sm font-medium transition-all leading-snug
+                                                    ${isSelected
+                                                        ? 'bg-violet-600 text-white shadow-sm'
+                                                        : 'bg-slate-100 text-slate-600 hover:bg-violet-100 hover:text-violet-700'}`}
+                                            >
+                                                {opt}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        ))}
+                        {!currentScene && (
+                            <div className="text-center text-slate-300 text-xs py-4">请在左侧选择功能场景</div>
+                        )}
+                    </div>
+                </div>
+                {/* 下半：多轮对话提示词框 */}
+                <div className="flex-1 min-h-0 flex flex-col">
+                    <div className="px-4 py-3 bg-slate-50 border-b border-slate-100 flex items-center justify-between shrink-0">
+                        <div className="flex items-center gap-2">
+                            <Sparkles className="w-3.5 h-3.5 text-violet-500" />
+                            <span className="text-base font-bold text-slate-600">提示词 & 修改对话</span>
+                        </div>
+                        {chatHistory.length > 0 && (
+                            <button
+                                onClick={() => { setChatHistory([]); setGenerateError(''); setGeneratingStatus(''); setImageSourceMode('ref'); }}
+                                className="flex items-center gap-1 text-sm text-slate-400 hover:text-red-400 transition-colors"
+                            >
+                                <RefreshCw className="w-3 h-3" /> 清空对话
+                            </button>
+                        )}
+                    </div>
+                    {/* 对话历史记录 */}
+                    <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-3">
+                        {chatHistory.length === 0 ? (
+                            <div className="text-center text-slate-400 text-sm py-4 leading-relaxed">
+                                从左侧选择场景后，关键词会自动<br />
+                                填入下方提示词，也可手动修改。<br />
+                                <span className="text-violet-400">📝 发送后可继续对话修改</span>
+                            </div>
+                        ) : (
+                            chatHistory.map((msg, idx) => (
+                                <div key={idx} className={`flex flex-col gap-1 ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                                    <div className={`max-w-[90%] px-4 py-3 rounded-2xl text-sm leading-relaxed
+                                        ${msg.role === 'user'
+                                            ? 'bg-violet-600 text-white rounded-tr-sm'
+                                            : 'bg-slate-100 text-slate-700 rounded-tl-sm'}`}
+                                    >
+                                        {msg.content}
+                                    </div>
+                                    {msg.images && msg.images.length > 0 && (
+                                        <div className="flex flex-wrap gap-1 max-w-[90%]">
+                                            {msg.images.slice(0, 4).map(img => (
+                                                <img key={img.id} src={img.url} alt={img.label}
+                                                    className="w-14 h-14 object-cover rounded-lg border border-slate-200 cursor-pointer hover:border-violet-400 transition-colors"
+                                                    onClick={() => setLightboxUrl(img.url)} />
+                                            ))}
+                                            {msg.images.length > 4 && (
+                                                <div className="w-14 h-14 rounded-lg border border-slate-200 bg-slate-100 flex items-center justify-center text-xs text-slate-400">
+                                                    +{msg.images.length - 4}
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                            ))
+                        )}
+                        {isGenerating && (
+                            <div className="flex items-start gap-2">
+                                <div className="bg-slate-100 rounded-2xl rounded-tl-sm px-3 py-2 flex items-center gap-1.5">
+                                    <Loader2 className="w-3 h-3 animate-spin text-violet-500" />
+                                    <span className="text-sm text-slate-500">{generatingStatus || 'AI 生成中...'}</span>
+                                </div>
+                            </div>
+                        )}
+                        {generateError && !isGenerating && (
+                            <div className="bg-red-50 border border-red-100 rounded-lg px-3 py-2 text-sm text-red-600">
+                                <span className="font-semibold">出错：</span>{generateError}
+                            </div>
+                        )}
+                        <div ref={chatEndRef} />
+                    </div>
+                    {/* 图源选择器（有生成结果后的后续轮次才显示） */}
+                    {hasGeneratedImages && !isFirstRound && (
+                        <div className="shrink-0 px-3 py-2 border-t border-slate-100 bg-slate-50">
+                            <p className="text-xs font-semibold text-slate-500 mb-1.5">下次生成基于：</p>
+                            <div className="flex gap-2">
+                                <button
+                                    onClick={() => setImageSourceMode('ref')}
+                                    className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-medium border transition-all
+                                        ${imageSourceMode === 'ref'
+                                            ? 'bg-violet-600 border-violet-600 text-white shadow-sm'
+                                            : 'border-slate-200 text-slate-600 hover:border-violet-400 hover:bg-violet-50'}`}
+                                >
+                                    <UploadCloud className="w-3.5 h-3.5" />
+                                    原始参考图
+                                </button>
+                                <button
+                                    onClick={() => setImageSourceMode('generated')}
+                                    disabled={!hasGeneratedImages}
+                                    className={`flex-1 flex items-center justify-center gap-1.5 py-2 rounded-lg text-sm font-medium border transition-all
+                                        ${imageSourceMode === 'generated'
+                                            ? 'bg-violet-600 border-violet-600 text-white shadow-sm'
+                                            : 'border-slate-200 text-slate-600 hover:border-violet-400 hover:bg-violet-50'}`}
+                                >
+                                    <ImageIcon className="w-3.5 h-3.5" />
+                                    上次生成图
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                    {/* 输入区 */}
+                    <div className="shrink-0 border-t border-slate-100 p-3">
+                        <div className="relative bg-slate-50 rounded-xl border border-slate-200 focus-within:border-violet-400 focus-within:ring-2 focus-within:ring-violet-100 transition-all">
+                            <textarea
+                                value={prompt}
+                                onChange={e => setPrompt(e.target.value)}
+                                onKeyDown={handleKeyDown}
+                                rows={4}
+                                placeholder={chatHistory.length > 0
+                                    ? "对本次结果不满意？说说你的修改意见..."
+                                    : "描述你希望生成的图片效果，会自动填入向导内容..."
+                                }
+                                className="w-full bg-transparent px-3 pt-3 pb-12 text-base text-slate-700 resize-none outline-none leading-relaxed placeholder:text-slate-400"
+                            />
+                            <div className="absolute bottom-2 right-2 left-2 flex items-center justify-between">
+                                <span className="text-sm text-slate-400">
+                                    {isSmartMatch
+                                        ? (refImages.length > 0 ? <span className="text-violet-500">🔎 上传完毕，点击进行智能检索</span> : '⚠️ 智能匹配需上传 1 张包含产品的参考图')
+                                        : isTextToImage
+                                            ? (prompt.includes('（未做细节指定）')
+                                                ? <span className="text-amber-500">⚠️ 请选择关键词或修改提示词后发送</span>
+                                                : <span className="text-green-500">✍️ 纯文字生图，无需参考图</span>)
+                                            : (isFirstRound
+                                                ? (refImages.length > 0 ? `已上传 ${refImages.length} 张参考图` : '⚠️ 请先上传参考图')
+                                                : (imageSourceMode === 'generated' ? '📷 将基于上次生成图修改' : `原始参考图 (${refImages.length} 张)`))
+                                    }
+                                    <span className="ml-2 text-slate-300">Ctrl+Enter 发送</span>
+                                </span>
+                                <button
+                                    onClick={handleGenerate}
+                                    disabled={!canGenerate}
+                                    className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-semibold transition-all
+                                        ${canGenerate
+                                            ? 'bg-violet-600 hover:bg-violet-700 text-white shadow-md shadow-violet-200'
+                                            : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}
+                                >
+                                    {isGenerating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+                                    {isSmartMatch ? '智能检索' : (chatHistory.length > 0 ? '修改' : '生成')}
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </aside>
+            {/* ======================= Lightbox 大图预览 ======================= */}
+            {lightboxUrl && (
+                <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-6 cursor-pointer"
+                    onClick={() => setLightboxUrl(null)}>
+                    <div className="relative max-w-4xl max-h-full">
+                        <img src={lightboxUrl} alt="预览" className="max-w-full max-h-[85vh] rounded-2xl shadow-2xl object-contain"
+                            onClick={e => e.stopPropagation()} />
+                        <button onClick={() => setLightboxUrl(null)}
+                            className="absolute -top-3 -right-3 w-8 h-8 bg-white text-slate-700 rounded-full shadow-lg flex items-center justify-center hover:bg-red-50 hover:text-red-500 transition-colors">
+                            <X className="w-4 h-4" />
+                        </button>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
+import React, { useState, useEffect } from 'react';
+import {
+  ClipboardList, Search, RefreshCw, User, Box,
+  Clock, ShieldAlert, ChevronLeft, ChevronRight, Eye
+} from 'lucide-react';
+import { fetchWithAuth } from '../utils/authFetch';
+interface AuditLog {
+  id: number;
+  user_id: number;
+  username: string;
+  module: string;
+  action: string;
+  target_data: string;
+  details: string;
+  status: string;
+  ip_address: string;
+  user_agent: string;
+  created_at: string;
+}
+// 模块中文映射表
+const MODULE_MAP: Record<string, string> = {
+  'AUTH': '账号认证',
+  'USER_MANAGE': '用户管理',
+  'ROLE_MANAGE': '角色管理',
+  'PROFILE': '个人中心',
+  'MARKET_INSIGHT': '市场洞察',
+  'PREDICTION': '营销预测',
+  'CUSTOMER_ANALYSIS': '客户分析',
+  'AI_IMAGE': '电商生图',
+  'RULES_ASSISTANT': '知识库',
+  'DAILY_NEWS': '每日推送',
+  'LAYOUT_COMPARE': '版式对比',
+  'CONTRACT_AUDIT': '合同审核',
+  'SEA_MARKETING': '出海营销',
+  'BEAUTY_RND': '美妆配方',
+  'ORDER_RECOGNITION': '订单识别',
+  'RISK_DETECTION': '风险检测',
+  'SYSTEM_CONFIG': '系统配置',
+  'FILE_MANAGE': '文件管理',
+  'QUALIFICATION': '资质审核'
+};
+// 行为中文映射表
+const ACTION_MAP: Record<string, string> = {
+  'LOGIN_SUCCESS': '登录成功',
+  'LOGIN_FAIL': '登录失败',
+  'LOGOUT': '退出登录',
+  'CREATE_USER': '创建用户',
+  'UPDATE_USER': '更新用户',
+  'DELETE_USER': '删除用户',
+  'RUN_ANALYSIS': '运行智能分析',
+  'RUN_CHATFLOW': '运行对话流',
+  'RUN_SUGGESTION': '生成建议',
+  'GENERATE_REPORT': '生成研发报告',
+  'GENERATE_CONTENT': '生成营销内容',
+  'RUN_ECOM_RISK': '运行电商风险检测',
+  'ECOM_UPLOAD_FILE': '上传电商检测文件',
+  'RUN_RND_RISK': '运行研发风险检测',
+  'RND_UPLOAD_FILE': '上传研发检测文件',
+  'RUN_AUDIT': '运行合同审核',
+  'UPLOAD_FILE': '上传文件',
+  'DOWNLOAD_FILE': '下载文件',
+  'UPDATE_CONFIG': '更新系统配置',
+  'REFRESH_TOKEN': '刷新令牌',
+  'DELETE_KEYWORD': '删除关键词',
+  'ADD_KEYWORD': '添加关键词',
+  'RUN_PREDICTION': '运行销量预测',
+  'RUN_LAYOUT': '运行版式对比',
+  'RUN_COMPARE': '运行版式对比',
+  'RUN_INQUIRY': '运行物料询价',
+  'FETCH_NEWS': '获取行业资讯',
+  'GENERATE_FORECAST': '生成营销预测',
+  'UPDATE_DATA': '更新同步数据',
+  'GENERATE': 'AI 智能生成',
+  'ANALYZE': '行业深度解析',
+  'GENERATE_BASELINE': '生成预测基准',
+  'TRACK_DEVIATION': '追踪预测偏差',
+  'CHAT': '知识库智能问答',
+  'SMART_MATCH': '研发智能匹配',
+  'UPDATE_AI_FIELD': '修改 AI 配置项',
+  'RUN_EXTRACT': '运行资质提取'
+};
+const AuditLogModule: React.FC = () => {
+  const [logs, setLogs] = useState<AuditLog[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pageSize] = useState(20);
+  // 筛选条件
+  const [username, setUsername] = useState('');
+  const [users, setUsers] = useState<{username: string, display_name: string}[]>([]);
+  const [module, setModule] = useState('');
+  const [selectedLog, setSelectedLog] = useState<AuditLog | null>(null);
+  const fetchUsersList = async () => {
+    try {
+      const res = await fetchWithAuth('/api/admin/users/minimal');
+      const data = await res.json();
+      if (data.success) {
+        setUsers(data.data);
+      }
+    } catch (err) {
+      console.error('Fetch users failed', err);
+    }
+  };
+  const fetchLogs = async () => {
+    setLoading(true);
+    try {
+      const query = new URLSearchParams({
+        username,
+        module,
+        page: page.toString(),
+        pageSize: pageSize.toString()
+      });
+      const res = await fetchWithAuth(`/api/admin/audit-logs?${query.toString()}`);
+      const data = await res.json();
+      if (data.success) {
+        setLogs(data.data.list);
+        setTotal(data.data.total);
+      }
+    } catch (err) {
+      console.error('Fetch audit logs failed', err);
+    } finally {
+      setLoading(false);
+    }
+  };
+  useEffect(() => {
+    fetchUsersList();
+  }, []);
+  useEffect(() => {
+    fetchLogs();
+  }, [page, pageSize]);
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    setPage(1);
+    fetchLogs();
+  };
+  const formatDate = (dateStr: string) => {
+    return new Date(dateStr).toLocaleString('zh-CN', {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit'
+    });
+  };
+  const parseJSON = (str: string) => {
+    try {
+      return JSON.parse(str);
+    } catch (e) {
+      return str;
+    }
+  };
+  const translate = (val: string, map: Record<string, string>) => {
+    return map[val] || val;
+  };
+  return (
+    <div className="flex flex-col h-full bg-slate-950 text-slate-100 overflow-hidden font-sans">
+      {/* 顶部标题与搜索栏 */}
+      <div className="p-4 border-b border-slate-800 bg-slate-900/50 backdrop-blur-md sticky top-0 z-10">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="p-2 bg-indigo-500/20 rounded-lg text-indigo-400">
+            <ClipboardList className="w-5 h-5" />
+          </div>
+          <div>
+            <h2 className="text-lg font-bold text-slate-100">系统操作日志</h2>
+            <p className="text-xs text-slate-400">记录系统关键操作行为与 AI 智能体使用情况，保障全链路可追溯性</p>
+          </div>
+        </div>
+        <form onSubmit={handleSearch} className="flex flex-wrap gap-3 items-end">
+          <div className="space-y-1.5">
+            <label className="text-xs text-slate-400 ml-1">操作账号</label>
+            <div className="relative group">
+              <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-indigo-400 transition-colors" />
+              <select
+                className="pl-9 pr-8 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm focus:outline-none focus:border-indigo-500 appearance-none min-w-[160px]"
+                value={username}
+                onChange={e => setUsername(e.target.value)}
+              >
+                <option value="">全部账号</option>
+                {users.map(u => (
+                  <option key={u.username} value={u.username}>
+                    {u.display_name ? `${u.display_name} (@${u.username})` : u.username}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            <label className="text-xs text-slate-400 ml-1">所属模块</label>
+            <div className="relative group">
+              <Box className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 group-focus-within:text-indigo-400 transition-colors" />
+              <select
+                className="pl-9 pr-8 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm focus:outline-none focus:border-indigo-500 appearance-none min-w-[140px]"
+                value={module}
+                onChange={e => setModule(e.target.value)}
+              >
+                <option value="">全部模块</option>
+                <option value="AUTH">账号认证</option>
+                <option value="USER_MANAGE">用户管理</option>
+                <option value="ROLE_MANAGE">角色管理</option>
+                <option value="PROFILE">个人中心</option>
+                <option value="MARKET_INSIGHT">市场洞察</option>
+                <option value="PREDICTION">营销预测</option>
+                <option value="CUSTOMER_ANALYSIS">客户分析</option>
+                <option value="AI_IMAGE">电商生图</option>
+                <option value="RULES_ASSISTANT">知识库</option>
+                <option value="DAILY_NEWS">每日推送</option>
+                <option value="LAYOUT_COMPARE">版式对比</option>
+                <option value="CONTRACT_AUDIT">合同审核</option>
+                <option value="SEA_MARKETING">出海营销</option>
+                <option value="BEAUTY_RND">美妆配方</option>
+                <option value="ORDER_RECOGNITION">订单识别</option>
+                <option value="RISK_DETECTION">风险检测</option>
+                <option value="QUALIFICATION">资质审核</option>
+              </select>
+            </div>
+          </div>
+          <button
+            type="submit"
+            className="flex items-center gap-2 px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-sm font-medium transition-all shadow-lg shadow-indigo-500/20 active:scale-95"
+          >
+            <Search className="w-4 h-4" />
+            查询
+          </button>
+          <button
+            type="button"
+            onClick={fetchLogs}
+            className="p-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg border border-slate-700 transition-colors"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+        </form>
+      </div>
+      {/* 表格区域 */}
+      <div className="flex-1 overflow-auto relative custom-scrollbar">
+        {loading && logs.length === 0 ? (
+          <div className="absolute inset-0 flex items-center justify-center bg-slate-950/50">
+            <RefreshCw className="w-8 h-8 text-indigo-500 animate-spin" />
+          </div>
+        ) : (
+          <table className="w-full text-sm text-left border-collapse">
+            <thead className="bg-slate-900/80 sticky top-0 border-b border-slate-800 text-slate-400 font-medium z-10">
+              <tr>
+                <th className="px-4 py-3 font-semibold w-16">ID</th>
+                <th className="px-4 py-3 font-semibold">账号</th>
+                <th className="px-4 py-3 font-semibold">模块</th>
+                <th className="px-4 py-3 font-semibold">行为</th>
+                <th className="px-4 py-3 font-semibold">目标</th>
+                <th className="px-4 py-3 font-semibold w-48">执行时间</th>
+                <th className="px-4 py-3 font-semibold w-20">详情</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/50">
+              {logs.map((log) => (
+                <tr key={log.id} className="hover:bg-slate-900/40 transition-colors group">
+                  <td className="px-4 py-3.5 text-slate-500 font-mono text-xs">{log.id}</td>
+                  <td className="px-4 py-3.5">
+                    <div className="flex items-center gap-2">
+                      <div className="w-6 h-6 rounded-full bg-slate-800 flex items-center justify-center text-[10px] text-indigo-400 border border-slate-700">
+                        {log.username.charAt(0).toUpperCase()}
+                      </div>
+                      <span className="font-medium text-slate-200">{log.username}</span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3.5">
+                    <span className="px-2 py-0.5 bg-slate-800 text-slate-300 rounded text-[10px] border border-slate-700">
+                      {translate(log.module, MODULE_MAP)}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3.5">
+                    <span className={`font-mono text-xs ${
+                      log.action.includes('FAIL') || log.action.includes('DELETE') ? 'text-rose-400' :
+                      log.action.includes('CREATE') || log.action.includes('LOGIN_SUCCESS') ? 'text-emerald-400' :
+                      'text-indigo-400'
+                    }`}>
+                      {translate(log.action, ACTION_MAP)}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3.5 text-slate-400 font-mono text-xs truncate max-w-[150px]">
+                    {log.target_data || '-'}
+                  </td>
+                  <td className="px-4 py-3.5 text-slate-400 text-xs">
+                    <div className="flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-slate-600" />
+                      {formatDate(log.created_at)}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3.5">
+                    <button
+                      onClick={() => setSelectedLog(log)}
+                      className="p-1.5 text-slate-500 hover:text-indigo-400 bg-transparent hover:bg-indigo-500/10 rounded-md transition-all"
+                    >
+                      <Eye className="w-4 h-4" />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {!loading && logs.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="py-20 text-center text-slate-500 italic">
+                    暂无符合条件的审计日志内容
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        )}
+      </div>
+      {/* 分页功能 */}
+      <div className="p-3 border-t border-slate-800 bg-slate-900/50 flex items-center justify-between">
+        <span className="text-xs text-slate-500">共 {total} 条记录</span>
+        <div className="flex items-center gap-2">
+          <button
+            disabled={page <= 1}
+            onClick={() => setPage(p => p - 1)}
+            className="p-1.5 bg-slate-800 border border-slate-700 rounded-md disabled:opacity-30 transition-all hover:bg-slate-700 active:scale-95"
+          >
+            <ChevronLeft className="w-4 h-4" />
+          </button>
+          <span className="text-xs text-slate-300 min-w-[60px] text-center">第 {page} 页</span>
+          <button
+            disabled={page * pageSize >= total}
+            onClick={() => setPage(p => p + 1)}
+            className="p-1.5 bg-slate-800 border border-slate-700 rounded-md disabled:opacity-30 transition-all hover:bg-slate-700 active:scale-95"
+          >
+            <ChevronRight className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+      {/* 详情弹窗 */}
+      {selectedLog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[85vh] animate-in zoom-in-95 duration-200 shadow-indigo-500/10">
+            <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-900/80 sticky top-0">
+              <div className="flex items-center gap-2 text-indigo-400">
+                <ShieldAlert className="w-5 h-5" />
+                <h3 className="font-bold text-slate-100">操作详情 #{selectedLog.id}</h3>
+              </div>
+              <button
+                onClick={() => setSelectedLog(null)}
+                className="text-slate-500 hover:text-white transition-colors"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="p-6 overflow-auto space-y-6 custom-scrollbar">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-slate-800/50 p-3 rounded-lg border border-slate-700/50">
+                  <span className="text-[10px] uppercase text-slate-500 font-bold tracking-wider block mb-1">操作账号</span>
+                  <p className="text-sm text-slate-100">{selectedLog.username} (ID: {selectedLog.user_id || 'N/A'})</p>
+                </div>
+                <div className="bg-slate-800/50 p-3 rounded-lg border border-slate-700/50">
+                  <span className="text-[10px] uppercase text-slate-500 font-bold tracking-wider block mb-1">执行状态</span>
+                  <span className={`text-xs px-2 py-0.5 rounded-full ${selectedLog.status === 'SUCCESS' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/20' : 'bg-rose-500/20 text-rose-400 border border-rose-500/20'}`}>
+                    {selectedLog.status}
+                  </span>
+                </div>
+                <div className="bg-slate-800/50 p-3 rounded-lg border border-slate-700/50">
+                  <span className="text-[10px] uppercase text-slate-500 font-bold tracking-wider block mb-1">来源 IP</span>
+                  <p className="text-sm text-slate-100 font-mono">{selectedLog.ip_address || 'Unknown'}</p>
+                </div>
+                <div className="bg-slate-800/50 p-3 rounded-lg border border-slate-700/50">
+                  <span className="text-[10px] uppercase text-slate-500 font-bold tracking-wider block mb-1">操作时间</span>
+                  <p className="text-sm text-slate-100">{formatDate(selectedLog.created_at)}</p>
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <span className="text-[10px] uppercase text-slate-500 font-bold tracking-wider block ml-1">详细参数 (Payload)</span>
+                <div className="bg-slate-950 p-4 rounded-lg border border-slate-800 font-mono text-xs overflow-auto max-h-48 text-indigo-300">
+                  <pre>{JSON.stringify(parseJSON(selectedLog.details), null, 2)}</pre>
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <span className="text-[10px] uppercase text-slate-500 font-bold tracking-wider block ml-1">浏览器 User Agent</span>
+                <div className="bg-slate-800/30 p-3 rounded-lg border border-slate-700/50 text-xs text-slate-400 italic">
+                  {selectedLog.user_agent}
+                </div>
+              </div>
+            </div>
+            <div className="p-4 bg-slate-900 border-t border-slate-800 text-right">
+              <button
+                onClick={() => setSelectedLog(null)}
+                className="px-6 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-sm font-medium transition-all"
+              >
+                关闭
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+export default AuditLogModule;
+import React, { useState, useEffect, useRef } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import remarkBreaks from 'remark-breaks';
+import { fetchWithAuth } from '../utils/authFetch';
+import {
+    Beaker, Database, ShieldAlert,
+    RefreshCcw, CheckCircle2, XCircle, ChevronDown, History, Info, Play, Square, Settings2, TestTube2, Fingerprint, Coins, ShieldCheck, Globe, Trash2,
+    AlertTriangle, FileText, Layers, Users, Ban, Server, Save
+} from 'lucide-react';
+import { useConfig } from '../hooks/useConfig';
+import { sysConfirm } from '../utils/dialog';
+// === Mock Types & Interfaces ===
+interface FormulaIngredient {
+    phase: string;
+    inci: string;
+    percentage: number;
+    function: string;
+    warning?: string;
+}
+interface FormulaVersion {
+    versionId: string;
+    versionName: string;
+    timestamp: string;
+    ingredients: FormulaIngredient[];
+}
+interface HistoryItem {
+    id: string;
+    date: string;
+    market: string;
+    productType: string;
+    painPoints?: string;
+    certifications?: string[];
+    costLimit?: number | '';
+    reportContent?: string;
+    conversation_id?: string;
+    mockVersions?: FormulaVersion[];
+}
+export const BeautyRnDModule: React.FC = () => {
+    const [isReady, setIsReady] = useState(false);
+    useEffect(() => {
+        requestAnimationFrame(() => {
+            setTimeout(() => setIsReady(true), 50);
+        });
+    }, []);
+    // --- Configurations Loader ---
+    const { data: configMarkets } = useConfig<{ name: string }>('markets', 'beauty_rnd');
+    const { data: configCertifications } = useConfig<{ name: string, region: string }>('certifications');
+    const { data: configPainPoints } = useConfig<{ name: string }>('pain_points');
+    const MARKETS = configMarkets.map(m => m.name);
+    const PAIN_POINT_TAGS = configPainPoints.map(p => p.name);
+    const CERT_OPTIONS = configCertifications.map(c => c.name);
+    const PRODUCT_FORMS = ['水剂 (Toner)', '乳液 (Lotion)', '膏霜 (Cream)', '凝胶 (Gel)', '精华 (Serum)', '油剂 (Oil)', '粉体 (Powder)'];
+    const SKIN_TYPES = ['干性/极干性', '油性/混油性', '中性肌肤', '敏感肌/受损肌', '熟龄肌 (抗老)', '婴童 (温和)'];
+    const BLACKLIST_TAGS = ['无硅油', '无酒精', '无防腐体系', '无香精', '无动物衍生物(Vegan)', '孕妇慎用成分排除', '无硫酸盐(Sulfate-free)'];
+    // --- Input States ---
+    const [dataSource, setDataSource] = useState<'public' | 'private'>('public');
+    const [productType, setProductType] = useState('');
+    const [productForm, setProductForm] = useState('');
+    const [skinType, setSkinType] = useState('');
+    const [targetMarket, setTargetMarket] = useState('');
+    const [painPoints, setPainPoints] = useState<string>('');
+    const [blacklist, setBlacklist] = useState<string[]>([]);
+    const [certifications, setCertifications] = useState<string[]>([]);
+    const [costLimit, setCostLimit] = useState<number | ''>('');
+    // --- UI States ---
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [reportReady, setReportReady] = useState(false);
+    const [reportContent, setReportContent] = useState('');
+    const [currentReportId, setCurrentReportId] = useState('');
+    // Removed unused currentReportDate
+    const [history, setHistory] = useState<HistoryItem[]>([]);
+    const [marketOpen, setMarketOpen] = useState(false);
+    const [formOpen, setFormOpen] = useState(false);
+    const [skinOpen, setSkinOpen] = useState(false);
+    const marketRef = useRef<HTMLDivElement>(null);
+    const formRef = useRef<HTMLDivElement>(null);
+    const skinRef = useRef<HTMLDivElement>(null);
+    // --- Workspace States ---
+    const [activeTab, setActiveTab] = useState<'formula' | 'report' | 'compliance'>('formula');
+    const [versions, setVersions] = useState<FormulaVersion[]>([]);
+    const [activeVersionId, setActiveVersionId] = useState<string>('');
+    const [editableIngredients, setEditableIngredients] = useState<FormulaIngredient[]>([]);
+    const [isEdited, setIsEdited] = useState(false);
+    useEffect(() => {
+        const activeVer = versions.find(v => v.versionId === activeVersionId);
+        if (activeVer) {
+            setEditableIngredients(JSON.parse(JSON.stringify(activeVer.ingredients)));
+            setIsEdited(false);
+        }
+    }, [activeVersionId, versions]);
+    const loadHistory = async () => {
+        try {
+            const res = await fetchWithAuth('/api/beauty-rnd/conversations', { method: 'GET' });
+            const result = await res.json();
+            if (result.data && Array.isArray(result.data)) {
+                const loaded: HistoryItem[] = result.data.map((c: any) => ({
+                    id: `RND-${c.id.substring(0, 6).toUpperCase()}`,
+                    conversation_id: c.id,
+                    date: new Date(c.created_at * 1000).toLocaleString(),
+                    market: c.inputs?.target_market || '未知',
+                    productType: c.inputs?.product_type || c.name || '未知品类',
+                    painPoints: c.inputs?.pain_point || '',
+                    certifications: c.inputs?.cert_require ? c.inputs.cert_require.split(', ') : [],
+                    costLimit: c.inputs?.cost_limit || ''
+                }));
+                setHistory(loaded);
+            }
+        } catch (e) {
+            console.error('Failed to load history', e);
+        }
+    };
+    useEffect(() => {
+        loadHistory();
+        const handleClickOutside = (event: MouseEvent) => {
+            if (marketRef.current && !marketRef.current.contains(event.target as Node)) setMarketOpen(false);
+            if (formRef.current && !formRef.current.contains(event.target as Node)) setFormOpen(false);
+            if (skinRef.current && !skinRef.current.contains(event.target as Node)) setSkinOpen(false);
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, []);
+    const toggleCert = (cert: string) => {
+        if (cert === '无认证') setCertifications(['无认证']);
+        else setCertifications(prev => {
+            const pure = prev.filter(c => c !== '无认证');
+            return pure.includes(cert) ? pure.filter(c => c !== cert) : [...pure, cert];
+        });
+    };
+    const toggleBlacklist = (tag: string) => {
+        setBlacklist(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
+    };
+    const handleTagClick = (tag: string) => {
+        setPainPoints(prev => {
+            const arr = prev.split(/[,，、 ]+/).filter(Boolean);
+            if (arr.includes(tag)) return prev;
+            return prev ? `${prev}, ${tag}` : tag;
+        });
+    };
+    const handleReset = () => {
+        setDataSource('public');
+        setProductType('');
+        setProductForm('');
+        setSkinType('');
+        setTargetMarket('');
+        setPainPoints('');
+        setBlacklist([]);
+        setCertifications([]);
+        setCostLimit('');
+        setReportReady(false);
+        setError(null);
+    };
+    const handleDemo = () => {
+        setDataSource('private');
+        setProductType('修护面霜');
+        setProductForm('膏霜 (Cream)');
+        setSkinType('敏感肌/受损肌');
+        setTargetMarket('中国');
+        setPainPoints('深层修护屏障、快速退红、长效保湿不黏腻');
+        setBlacklist(['无香精', '无酒精', '无防腐体系']);
+        setCertifications(['NMPA 普通化妆品备案']);
+        setCostLimit(12.50);
+        setReportReady(false);
+        setError(null);
+    };
+    const handleStop = () => {
+        setLoading(false);
+        setError('生成已中断');
+    };
+    const generateMockData = (dateStr: string): FormulaVersion[] => {
+        return [
+            {
+                versionId: 'v1.0',
+                versionName: 'V1.0 初始配方',
+                timestamp: dateStr,
+                ingredients: [
+                    { phase: 'A', inci: 'Aqua', percentage: 65.0, function: '溶剂' },
+                    { phase: 'A', inci: 'Glycerin', percentage: 5.0, function: '保湿剂' },
+                    { phase: 'A', inci: 'Panthenol', percentage: 2.0, function: '维生素B5/修护' },
+                    { phase: 'B', inci: 'Squalane', percentage: 8.0, function: '植物角鲨烷/仿生皮脂' },
+                    { phase: 'B', inci: 'Cetearyl Alcohol', percentage: 3.5, function: '脂肪醇/增稠' },
+                    { phase: 'B', inci: 'Ceramide NP', percentage: 1.0, function: '神经酰胺/屏障修护' },
+                    { phase: 'C', inci: 'Centella Asiatica Extract', percentage: 2.0, function: '积雪草提取物/退红' },
+                    { phase: 'C', inci: 'Sodium Hyaluronate', percentage: 0.5, function: '透明质酸钠/保湿' },
+                    { phase: 'D', inci: '1,2-Hexanediol', percentage: 1.5, function: '替代防腐/保湿' },
+                    { phase: 'D', inci: 'Hydroxyacetophenone', percentage: 0.5, function: '对羟基苯乙酮/替代防腐' }
+                ]
+            }
+        ];
+    };
+    const parseFormulaVersions = (rawAnswer: string, dateStr: string) => {
+        let formulaJsonStr = '';
+        let reportMd = rawAnswer;
+        if (rawAnswer.includes('<json>')) {
+            const match = rawAnswer.match(/<json>([\s\S]*?)<\/json>/);
+            if (match) {
+                formulaJsonStr = match[1].trim();
+            }
+            reportMd = rawAnswer.replace(/<json>[\s\S]*?<\/json>/, '').trim();
+        }
+        let parsedJson = [];
+        try {
+            if (formulaJsonStr) parsedJson = JSON.parse(formulaJsonStr);
+        } catch (e) {
+            console.error("Failed to parse formula JSON", e);
+        }
+        let finalVersions: FormulaVersion[] = [];
+        if (Array.isArray(parsedJson) && parsedJson.length > 0) {
+            // Check if it's the new multi-formula format
+            if (parsedJson[0].ingredients && Array.isArray(parsedJson[0].ingredients)) {
+                finalVersions = parsedJson.map((f, idx) => ({
+                    versionId: `v1.${idx}`,
+                    versionName: f.formula_name || `V1.${idx} 配方${idx+1}`,
+                    timestamp: dateStr,
+                    ingredients: f.ingredients
+                }));
+            } else if (parsedJson[0].inci) {
+                // Single array fallback
+                finalVersions = [{
+                    versionId: 'v1.0',
+                    versionName: 'V1.0 AI 初代配方',
+                    timestamp: dateStr,
+                    ingredients: parsedJson
+                }];
+            }
+        }
+        if (finalVersions.length === 0) {
+            finalVersions = generateMockData(dateStr);
+        }
+        return { reportMd, versions: finalVersions };
+    };
+    const handleGenerate = async () => {
+        if (!productType || !targetMarket || !painPoints || !costLimit || !productForm || !skinType) {
+            setError('请填齐所有带 * 号的必填项 (产品类型/剂型/肤质/市场/痛点/成本)');
+            setTimeout(() => setError(null), 4000);
+            return;
+        }
+        setLoading(true);
+        setError(null);
+        setReportReady(false);
+        setReportContent('');
+        setVersions([]);
+        try {
+            const response = await fetchWithAuth('/api/beauty-rnd/generate', {
+                method: 'POST',
+        start_abs_quarter = current_abs_quarter - 4
+        quarterly_df = df[
+            (df['abs_quarter'] >= start_abs_quarter) &
+            (df['abs_quarter'] <= current_abs_quarter)
+        ].copy()
+        # 生成最近5个季度列表
+        quarterly_cols = []
+        for abs_q in range(start_abs_quarter, current_abs_quarter + 1):
+            y = (abs_q - 1) // 4
+            q = (abs_q - 1) % 4 + 1
+            col_name = f"{y % 100}-Q{q}"
+            quarterly_cols.append(col_name)
+        quarterly_df['display_quarter'] = quarterly_df.apply(
+            lambda x: f"{x['fYear'] % 100}-Q{x['quarter_idx']}", axis=1
+        )
+        quarterly_df_filtered = quarterly_df[quarterly_df['fItemId'].isin(top_skus)].copy()
+        # 2.1 季销量矩阵
+        quarterly_volume_pivot = pd.pivot_table(
+            quarterly_df_filtered,
+            values='fQty',
+            index=['fItemId', 'fName', 'product_group'],
+            columns='display_quarter',
+            aggfunc='sum',
+            fill_value=0
+        ).reindex(columns=quarterly_cols, fill_value=0).round(0).reset_index()
+        quarterly_volume_pivot.rename(columns={'fItemId': 'sku_id', 'fName': 'product_name'}, inplace=True)
+        quarterly_volume_pivot['gross_margin'] = quarterly_volume_pivot['sku_id'].map(sku_summary['gross_margin'].to_dict())
+        quarterly_volume_pivot['avg_price'] = quarterly_volume_pivot['sku_id'].map(sku_summary['avg_price'].to_dict())
+        quarterly_volume_pivot['total_qty'] = quarterly_volume_pivot[quarterly_cols].sum(axis=1)
+        quarterly_volume_pivot.sort_values('total_qty', ascending=False, inplace=True)
+        # 2.2 季销售额矩阵
+        quarterly_revenue_pivot = pd.pivot_table(
+            quarterly_df_filtered,
+            values='fSaleAmount',
+            index=['fItemId', 'fName', 'product_group'],
+            columns='display_quarter',
+            aggfunc='sum',
+            fill_value=0
+        ).reindex(columns=quarterly_cols, fill_value=0).round(2).reset_index()
+        quarterly_revenue_pivot.rename(columns={'fItemId': 'sku_id', 'fName': 'product_name'}, inplace=True)
+        quarterly_revenue_pivot['gross_margin'] = quarterly_revenue_pivot['sku_id'].map(sku_summary['gross_margin'].to_dict())
+        quarterly_revenue_pivot['avg_price'] = quarterly_revenue_pivot['sku_id'].map(sku_summary['avg_price'].to_dict())
+        quarterly_revenue_pivot['total_revenue'] = quarterly_revenue_pivot[quarterly_cols].sum(axis=1)
+        quarterly_revenue_pivot.sort_values('total_revenue', ascending=False, inplace=True)
+        # ==============================================================================
+        # 3. 类别占比分析 (Category Breakdown)
+        # ==============================================================================
+        cat_df = monthly_df_filtered.groupby('product_group').agg(
+            volume=('fQty', 'sum'),
+            revenue=('fSaleAmount', 'sum')
+        ).reset_index()
+        total_vol = cat_df['volume'].sum()
+        total_rev = cat_df['revenue'].sum()
+        category_breakdown = []
+        for _, row in cat_df.iterrows():
+            category_breakdown.append({
+                "category": row['product_group'],
+                "volume": int(row['volume']),
+                "revenue": round(float(row['revenue']), 2),
+                "vol_percentage": round(float(row['volume'] / total_vol * 100), 2) if total_vol > 0 else 0,
+                "rev_percentage": round(float(row['revenue'] / total_rev * 100), 2) if total_rev > 0 else 0
+            })
+        print("销量与销售额数据处理完成！")
+        return {
+            "monthly_volume_matrix": monthly_volume_pivot.to_dict(orient='records'),
+            "monthly_revenue_matrix": monthly_revenue_pivot.to_dict(orient='records'),
+            "quarterly_volume_matrix": quarterly_volume_pivot.to_dict(orient='records'),
+            "quarterly_revenue_matrix": quarterly_revenue_pivot.to_dict(orient='records'),
+            "category_breakdown": category_breakdown,
+            "meta_info": {
+                "query_time": now.strftime("%Y-%m-%d %H:%M:%S"),
+                "sku_filter": "Top 80% Revenue/Volume Contributors",
+                "volume_unit": "箱/千克",
+                "revenue_unit": "元 (CNY)",
+                "monthly_columns": monthly_cols,
+                "quarterly_columns": quarterly_cols
+            }
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return None
+if __name__ == "__main__":
+    data = process_marketing_analysis()
+    if data:
+        output_file = "marketing_analysis_data.json"
+        with open(output_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4, ensure_ascii=False, default=str)
+        print(f"数据已导出到: {output_file}")
+import os
+import json
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
+DB_URL = "postgresql://dify_admin:Asdf.159753@39.108.221.22:9800/dify_memory"
+engine = create_engine(DB_URL)
+Session = sessionmaker(bind=engine)
+data = [
+    ("Bithionol", "硫双二氯酚", "全面禁用"),
+    ("Mercury compounds", "汞化合物", "全面禁用（除了极少数眼部化妆品作为防腐剂，且上限为 0.0065%）"),
+    ("Vinyl chloride", "氯乙烯", "全面禁用（作为气雾剂推进剂）"),
+    ("Halogenated salicylanilides", "卤代水杨酰苯胺", "全面禁用"),
+    ("Zirconium complexes", "锆络合物", "全面禁用（在气雾剂/喷雾类化妆品中）"),
+    ("Chloroform", "氯仿/三氯甲烷", "全面禁用"),
+    ("Methylene chloride", "二氯甲烷", "全面禁用"),
+    ("Chlorofluorocarbon propellants", "氯氟烃推进剂", "全面禁用"),
+    ("Prohibited cattle materials", "受限牛源材料", "全面禁用（防范疯牛病）")
+]
+def upsert_ingredient(session, inci_name, cn_name):
+    sql = text("""
+        INSERT INTO ingredients (inci_name, cn_name)
+        VALUES (:inci_name, :cn_name)
+        ON CONFLICT (inci_name) DO UPDATE
+        SET cn_name = COALESCE(ingredients.cn_name, EXCLUDED.cn_name)
+        RETURNING id;
+    """)
+    result = session.execute(sql, {'inci_name': inci_name, 'cn_name': cn_name})
+    return result.fetchone()[0]
+def upsert_rule(session, ingredient_id, restriction_desc):
+    sql = text("""
+        INSERT INTO compliance_rules (ingredient_id, region, category, status, restrictions, source_file)
+        SELECT :ingredient_id, 'USA', 'Banned', 'Prohibited', CAST(:restrictions AS JSONB), 'FDA 明确禁用成分清单'
+        WHERE NOT EXISTS (
+            SELECT 1 FROM compliance_rules
+            WHERE ingredient_id = :ingredient_id
+              AND region = 'USA'
+              AND category = 'Banned'
+              AND source_file = 'FDA 明确禁用成分清单'
+        );
+    """)
+    res_str = json.dumps({'RESTRICTIONS': restriction_desc}, ensure_ascii=False)
+    session.execute(sql, {
+        'ingredient_id': ingredient_id,
+        'restrictions': res_str
+    })
+def main():
+    session = Session()
+    try:
+        for inci, cn, rest in data:
+            ing_id = upsert_ingredient(session, inci, cn)
+            upsert_rule(session, ing_id, rest)
+            print(f"Inserted {inci}")
+        session.commit()
+        print("FDA explicit banned ingredients added successfully.")
+    except Exception as e:
+        session.rollback()
+        print("Error:", e)
+    finally:
+        session.close()
+if __name__ == '__main__':
+    main()
+import pkg from 'pg';
+const { Pool } = pkg;
+import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+dotenv.config({ path: path.join(__dirname, '../.env') });
+const pool = new Pool({
+    host: process.env.PG_HOST,
+    port: process.env.PG_PORT,
+    database: process.env.PG_DATABASE,
+    user: process.env.PG_USER,
+    password: process.env.PG_PASSWORD,
+});
+async function checkContent() {
+    try {
+        const tables = ['ref_pain_point_tags', 'ref_certifications', 'ref_target_markets', 'ref_product_types'];
+        for (const t of tables) {
+            const res = await pool.query(`SELECT * FROM ${t} LIMIT 5`);
+            console.log(`Table ${t}:`, res.rows);
+        }
+    } catch (err) {
+        console.error(err);
+    } finally {
+        await pool.end();
+    }
+}
+checkContent();
+import pkg from 'pg';
+const { Pool } = pkg;
+import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+dotenv.config({ path: path.join(__dirname, '../.env') });
+const pool = new Pool({
+    host: process.env.PG_HOST,
+    port: process.env.PG_PORT,
+    database: process.env.PG_DATABASE,
+    user: process.env.PG_USER,
+    password: process.env.PG_PASSWORD,
+});
+async function checkColumns() {
+    try {
+        const res = await pool.query("SELECT column_name FROM information_schema.columns WHERE table_name = 'ref_target_markets'");
+        console.log('Columns:', res.rows.map(r => r.column_name));
+    } catch (err) {
+        console.error(err);
+    } finally {
+        await pool.end();
+    }
+}
+checkColumns();
+import pkg from 'pg';
+const { Pool } = pkg;
+import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+dotenv.config({ path: path.join(__dirname, '../.env') });
+const pool = new Pool({
+    host: process.env.PG_HOST,
+    port: process.env.PG_PORT,
+    database: process.env.PG_DATABASE,
+    user: process.env.PG_USER,
+    password: process.env.PG_PASSWORD,
+});
+async function checkMarkets() {
+    try {
+        const res = await pool.query("SELECT * FROM ref_target_markets ORDER BY id");
+        console.log(res.rows);
+    } catch (err) {
+        console.error(err);
+    } finally {
+        await pool.end();
+    }
+}
+checkMarkets();
+import pkg from 'pg';
+const { Pool } = pkg;
+import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+dotenv.config({ path: path.join(__dirname, '../.env') });
+const pool = new Pool({
+    host: process.env.PG_HOST,
+    port: process.env.PG_PORT,
+    database: process.env.PG_DATABASE,
+    user: process.env.PG_USER,
+    password: process.env.PG_PASSWORD,
+});
+async function checkContent() {
+    try {
+        const tables = ['ref_target_markets', 'ref_pain_point_tags', 'ref_certifications', 'ref_marketing_styles', 'ref_languages'];
+        for (const t of tables) {
+            const res = await pool.query(`SELECT * FROM ${t} LIMIT 5`);
+            console.log(`Table ${t}:`, res.rows);
+        }
+    } catch (err) {
+        console.error(err);
+    } finally {
+        await pool.end();
+    }
+}
+checkContent();
+import os
+import base64
+from volcenginesdkarkruntime import Ark
+from volcenginesdkarkruntime.types.images.images import SequentialImageGenerationOptions
+from dotenv import load_dotenv
+# 加载环境变量
+load_dotenv()
+# 辅助函数：将本地图片转换为包含 Data URI 前缀的 Base64 编码
+def encode_image_to_base64(image_path):
+    """
+    读取本地图片并转换为标准的 Data URI 格式 Base64 字符串。
+    """
+    if not os.path.exists(image_path):
+        raise FileNotFoundError(f"找不到本地图片文件: {image_path}")
+    # 获取文件后缀名以确定 MIME 类型
+    ext = os.path.splitext(image_path)[1].lower().replace('.', '')
+    if ext == 'jpg': ext = 'jpeg'
+    mime_type = f"image/{ext}" if ext in ['png', 'jpeg', 'jpg', 'webp'] else "image/png"
+    with open(image_path, "rb") as image_file:
+        # 读取二进制数据并转为 base64 字符串
+        encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
+        # 拼接标准 Data URI 前缀
+        return f"data:{mime_type};base64,{encoded_string}"
+# 初始化 Ark 客户端
+client = Ark(
+    base_url="https://ark.cn-beijing.volces.com/api/v3",
+    api_key=os.getenv("ARK_API_KEY"),
+)
+# 1. 指定本地图片路径列表（支持单张或多张）
+# 如果只有一张： [r"C:\path\to\image1.jpg"]
+# 如果有多张： [r"C:\path\to\image1.jpg", r"C:\path\to\image2.jpg"]
+local_image_paths = [
+    r"C:\Users\db\Desktop\衣服.jpg",
+    # r"C:\Users\db\Desktop\衣服细节.jpg" # 如果有多张，取消注释并添加路径即可
+]
+try:
+    # 2. 批量调用转换函数，生成 Base64 列表
+    base64_images = [encode_image_to_base64(path) for path in local_image_paths]
+    # 3. 发起请求
+    # 注意：如果 base64_images 只有一个元素，API 也能识别；如果是多个元素，则作为参考图集合
+    imagesResponse = client.images.generate(
+        model="doubao-seedream-4-0-250828",
+        prompt="""
+请根据我提供的产品参考图，严格生成 3 张高清实拍质感图片，要求风格统一、光线自然、细节清晰、无水印、无多余文字、真实质感：
+1、产品侧面图：纯白背景，侧面平视拍摄，完整展示产品侧面轮廓
+2、国内模特上身效果图：简约室内场景，自然光，亚洲模特，自然穿搭，全身展示上身效果
+3、国外模特上身效果图：简约室内场景，自然光，欧美模特，自然穿搭，全身展示上身效果
+商业摄影，自然光，柔和光影，细节丰富，色彩真实，无畸变，专业电商实拍
+        """,
+        # 传入 base64 列表或单张字符串
+        image=base64_images if len(base64_images) > 1 else base64_images[0],
+        sequential_image_generation="auto",
+        sequential_image_generation_options=SequentialImageGenerationOptions(max_images=5),
+        response_format="url",
+        size="2K",
+        stream=True,
+        watermark=True
+    )
+    # 4. 处理流式响应
+    for event in imagesResponse:
+        if event is None:
+            continue
+        if event.type == "image_generation.partial_failed":
+            print(f"生成部分失败: {event.error}")
+            if event.error and event.error.code == "InternalServiceError":
+                break
+        elif event.type == "image_generation.partial_succeeded":
+            if event.error is None and event.url:
+                print(f"收到图片 - 尺寸: {event.size}, URL: {event.url}")
+        elif event.type == "image_generation.completed":
+            if event.error is None:
+                print("生成任务已完成。")
+                print("消耗统计:", event.usage)
+except Exception as e:
+    print(f"发生错误: {e}")
+// 全量SKU月度预测脚本 (增强版：带重试、实时保存、错误容错、品牌脱敏)
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import 'dotenv/config';
+import pg from 'pg';
+import { maskProductNamesByBrandDict } from '../server/utils/maskingUtils.js';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const DIFY_API_KEY = process.env.DIFY_CHATFLOW_API_KEY;
+const DIFY_API_URL = process.env.DIFY_CHATFLOW_API_URL;
+const BATCH_SIZE = 8;      // 每批8个SKU (减小批次以提高稳定性)
+const BATCH_DELAY = 3000;   // 批次间延迟3秒
+const MAX_RETRIES = 3;      // 每批最多重试3次
+const salesData = JSON.parse(
+    fs.readFileSync(path.join(__dirname, '..', 'public', 'sales_analysis_matrix.json'), 'utf-8')
+);
+const today = new Date();
+const forecastMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+const outputPath = path.join(__dirname, '..', 'public', 'monthly_forecast_baseline.json');
+// ====== 【品牌字典】从 PostgreSQL 加载品牌脱敏映射表 ======
+const { Pool } = pg;
+const pgPool = new Pool({
+    host:     process.env.PG_HOST,
+    port:     parseInt(process.env.PG_PORT || '9800'),
+    database: process.env.PG_DATABASE,
+    user:     process.env.PG_USER,
+    password: process.env.PG_PASSWORD
+});
+let brandDict = [];
+try {
+    const res = await pgPool.query('SELECT id, brand_name FROM brand_dictionary ORDER BY id');
+    brandDict = res.rows;
+    console.log(`🔐 已加载品牌字典，共 ${brandDict.length} 条品牌记录（将在调用前对 product_name 脱敏）\n`);
+} catch (e) {
+    console.warn(`⚠️  品牌字典加载失败，将以未脱敏数据继续: ${e.message}\n`);
+} finally {
+    pgPool.end().catch(() => {});
+}
+// =========================================================
+console.log('🚀 开始生成月度预测基线 (增强稳定性版)...\n');
+console.log(`Dify API: ${DIFY_API_URL}`);
+console.log(`📦 总SKU数: ${salesData.monthly_matrix.length}`);
+console.log(`📊 批次设置: ${BATCH_SIZE}个/批, 最大重试${MAX_RETRIES}次\n`);
+// 分批
+const batches = [];
+for (let i = 0; i < salesData.monthly_matrix.length; i += BATCH_SIZE) {
+    batches.push(salesData.monthly_matrix.slice(i, i + BATCH_SIZE));
+}
+console.log(`📋 共分为 ${batches.length} 批\n`);
+console.log('='.repeat(70) + '\n');
+// 全局状态
+const allForecasts = [];
+let successCount = 0;
+let failCount = 0;
+// 实时保存函数
+const saveProgress = () => {
+    const forecastBaseline = {
+        forecast_month: forecastMonth,
+        generated_at: new Date().toISOString(),
+        forecast_results: allForecasts,
+        metadata: {
+            total_skus: allForecasts.length,
+            target_skus: salesData.monthly_matrix.length,
+            prediction_model: 'dify_chatflow',
+            batch_count: batches.length,
+            batch_size: BATCH_SIZE,
+            success_rate: ((allForecasts.length / salesData.monthly_matrix.length) * 100).toFixed(1) + '%',
+            status: allForecasts.length >= salesData.monthly_matrix.length ? 'completed' : 'in_progress'
+        }
+    };
+    try {
+        fs.writeFileSync(outputPath, JSON.stringify(forecastBaseline, null, 2));
+        console.log(`  💾 [进度保存] 当前已收集 ${allForecasts.length} 个SKU数据`);
+    } catch (e) {
+        console.error(`  ❌ 保存失败: ${e.message}`);
+    }
+};
+/**
+ * 健壮的 JSON 提取器
+ */
+const extractJsonFromText = (text) => {
+    try {
+        // 先尝试定位包含 forecast_results 的 JSON 块
+        const regexes = [
+            /```json\s*([\s\S]*?)\s*```/i,        // Markdown 代码块
+            /({[\s\S]*"forecast_results"[\s\S]*})/i, // 包含关键字段的字典
+            /(\[[\s\S]*"sku_id"[\s\S]*\])/i,      // 包含关键字段的数组
+            /({[\s\S]*})/i,                        // 任何字典
+            /(\[[\s\S]*\])/i                       // 任何数组
+        ];
+        for (const reg of regexes) {
+            const match = text.match(reg);
+            if (match) {
+                try {
+                    const parsed = JSON.parse(match[1] || match[0]);
+                    // 如果结果是对象，检查是否包含 forecast_results
+                    if (parsed.forecast_results && Array.isArray(parsed.forecast_results)) {
+                        return parsed.forecast_results;
+                    }
+                    // 如果结果本身就是数组，且第一项有 sku_id，则直接返回
+                    if (Array.isArray(parsed) && parsed.length > 0 && (parsed[0].sku_id || parsed[0].id)) {
+                        return parsed;
+                    }
+                } catch (e) {
+                    // 继续尝试下一个正则
+                }
+            }
+        }
+    } catch (e) {}
+    return null;
+};
+// 处理单个批次
+const processBatch = async (batch, batchIndex, retryCount = 0) => {
+    try {
+        console.log(`📦 批次 ${batchIndex + 1}/${batches.length} (SKU ${batch[0].sku_id} ~ ${batch[batch.length - 1].sku_id})${retryCount > 0 ? ` [重试 ${retryCount}/${MAX_RETRIES}]` : ''}`);
+        // 构建该批次的数据
+        const batchData = {
+            monthly_matrix: batch,
+            quarterly_matrix: salesData.quarterly_matrix.filter(row =>
+                batch.some(b => b.sku_id === row.sku_id)
+            ),
+            meta_info: salesData.meta_info
+        };
+        // ====== 【品牌脱敏】调用前将 product_name 中的品牌名替换为"品牌[id]" ======
+        const maskedBatchData = maskProductNamesByBrandDict(batchData, brandDict);
+        // =====================================================================
+        const queryContent = JSON.stringify(maskedBatchData, null, 2);
+        // 设置较长的超时
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 120000); // 2分钟超时
+        const response = await fetch(DIFY_API_URL, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${DIFY_API_KEY}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                inputs: {
+                    userinput: {
+                        query: queryContent
+                    },
+                    customer_batch_json: queryContent // 兼容部分工作流可能要求的输入名
+                },
+                query: queryContent,
+                response_mode: 'streaming',
+                conversation_id: '',
+                user: `sys_fc_b${batchIndex}_r${retryCount}`
+            }),
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        if (!response.ok) {
+            throw new Error(`API响应错误: ${response.status} ${response.statusText}`);
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let fullResponse = '';
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split('\n').filter(line => line.trim());
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    const data = line.substring(6);
+                    try {
+                        const parsed = JSON.parse(data);
+                        if (parsed.event === 'message' || parsed.event === 'agent_message') {
+                            fullResponse += parsed.answer || '';
+                        }
+                    } catch (e) { }
+                }
+            }
+        }
+        // 提取结果
+        const extractedResults = extractJsonFromText(fullResponse);
+        if (extractedResults && Array.isArray(extractedResults)) {
+            // 归一化字段并补全商品名
+            const batchForecasts = extractedResults.map(forecast => {
+                const sku_id = forecast.sku_id || forecast.id;
+                const originalRow = batch.find(row => row.sku_id === Number(sku_id));
+                return {
+                    sku_id: Number(sku_id),
+                    product_name: originalRow?.product_name || forecast.product_name || '',
+                    current_month_forecast: forecast.current_month_forecast ?? 0,
+                    next_month_forecast: forecast.next_month_forecast ?? 0,
+                    current_quarter_forecast: forecast.current_quarter_forecast ?? 0,
+                    next_quarter_forecast: forecast.next_quarter_forecast ?? 0
+                };
+            }).filter(f => f.sku_id);
+            if (batchForecasts.length > 0) {
+                console.log(`  ✅ 成功提取 ${batchForecasts.length} 个SKU预测`);
+                allForecasts.push(...batchForecasts);
+                successCount += batchForecasts.length;
+                saveProgress();
+                return true;
+            }
+        }
+        console.warn(`  ⚠️ 提取失败 (响应长度: ${fullResponse.length})`);
+        if (fullResponse.length < 500) {
+            console.warn(`  [调试] API完整返回内容: ${fullResponse}`);
+        } else {
+            console.warn(`  [调试] API返回前200字符: ${fullResponse.substring(0, 200)}...`);
+        }
+        throw new Error('无法从响应中解析出有效的预测数据');
+    } catch (error) {
+        console.error(`  ❌ 批次处理出错: ${error.message}`);
+        if (retryCount < MAX_RETRIES) {
+            const waitTime = 5000 * (retryCount + 1);
+            console.log(`  ⏳ ${waitTime / 1000}秒后重试...`);
+            await new Promise(r => setTimeout(r, waitTime));
+            return await processBatch(batch, batchIndex, retryCount + 1);
+        } else {
+            console.error(`  💀 达到最大重试次数，跳过此批次`);
+            failCount += batch.length;
+            return false;
+        }
+    }
+};
+// 主执行流程
+const main = async () => {
+    for (let i = 0; i < batches.length; i++) {
+        await processBatch(batches[i], i);
+        // 批次间延迟
+        if (i < batches.length - 1) {
+            await new Promise(resolve => setTimeout(resolve, BATCH_DELAY));
+        }
+    }
+    console.log('\n' + '='.repeat(70));
+    console.log('🏁 所有批次处理完成');
+    console.log(`📊 最终统计: 成功 ${successCount} / 失败 ${failCount} / 总计 ${salesData.monthly_matrix.length}`);
+    console.log(`💾 最终结果已保存: ${outputPath}`);
+};
+main().catch(console.error);
+"""
+generate_image.py - Doubao 图生图脚本（供 server.js spawn 调用）
+用法：
+    python generate_image.py
+    通过 stdin 传入 JSON：{"prompt": "提示词", "images": ["data:image/jpeg;base64,..."]}
+每张图片就绪时向 stdout 输出一行 JSON：
+    {"type":"partial","url":"https://...","index":1}
+全部完成时输出：
+    {"type":"complete","total":3}
+出错时输出：
+    {"type":"error","message":"..."}
+"""
+import sys
+import os
+import json
+from dotenv import load_dotenv
+# 加载 .env（与 server.js 同目录）
+load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
+def main():
+    # 从 stdin 读取所有数据（prompt + 图片 base64）
+    try:
+        stdin_data = sys.stdin.buffer.read()
+        payload = json.loads(stdin_data.decode('utf-8'))
+        prompt = payload.get('prompt', '')
+        images = payload.get('images', [])
+        size = payload.get('size', '2K')
+        if size not in ('2K', '4K'):
+            size = '2K'
+    except Exception as e:
+        print(json.dumps({"type": "error", "message": f"读取stdin失败: {e}"}, ensure_ascii=False))
+        sys.stdout.flush()
+        sys.exit(1)
+    if not prompt:
+        print(json.dumps({"type": "error", "message": "未收到提示词"}, ensure_ascii=False))
+        sys.stdout.flush()
+        sys.exit(1)
+    if not images:
+        print(json.dumps({"type": "error", "message": "未收到图片数据"}, ensure_ascii=False))
+        sys.stdout.flush()
+        sys.exit(1)
+    api_key = os.getenv('ARK_API_KEY')
+    if not api_key or api_key == '请填入你的ARK_API_KEY':
+        print(json.dumps({"type": "error", "message": "ARK_API_KEY 未配置，请在 .env 文件中填写"}, ensure_ascii=False))
+        sys.stdout.flush()
+        sys.exit(1)
+    try:
+        from volcenginesdkarkruntime import Ark
+        from volcenginesdkarkruntime.types.images.images import SequentialImageGenerationOptions
+    except ImportError:
+        print(json.dumps({"type": "error", "message": "缺少依赖：请执行 pip install volcengine-python-sdk[ark]"}, ensure_ascii=False))
+        sys.stdout.flush()
+        sys.exit(1)
+    try:
+        client = Ark(
+            base_url="https://ark.cn-beijing.volces.com/api/v3",
+            api_key=api_key,
+        )
+        image_param = images if len(images) > 1 else images[0]
+        response = client.images.generate(
+            model="doubao-seedream-4-0-250828",
+            prompt=prompt,
+            image=image_param,
+            sequential_image_generation="auto",
+            sequential_image_generation_options=SequentialImageGenerationOptions(max_images=10),
+            response_format="url",
+            size=size,
+            stream=True,
+            watermark=False
+        )
+        count = 0
+        for event in response:
+            if event is None:
+                continue
+            if event.type == "image_generation.partial_succeeded":
+                if event.error is None and event.url:
+                    count += 1
+                    print(json.dumps({
+                        "type": "partial",
+                        "url": event.url,
+                        "index": count
+                    }, ensure_ascii=False))
+                    sys.stdout.flush()
+            elif event.type == "image_generation.partial_failed":
+                err_msg = str(event.error) if event.error else "未知错误"
+                print(json.dumps({"type": "partial_failed", "message": err_msg}, ensure_ascii=False))
+                sys.stdout.flush()
+                if event.error and getattr(event.error, 'code', '') == 'InternalServiceError':
+                    break
+            elif event.type == "image_generation.completed":
+                print(json.dumps({"type": "complete", "total": count}, ensure_ascii=False))
+                sys.stdout.flush()
+    except Exception as e:
+        print(json.dumps({"type": "error", "message": str(e)}, ensure_ascii=False))
+        sys.stdout.flush()
+        sys.exit(1)
+if __name__ == "__main__":
+    main()
+import os
+import re
+import json
+import pandas as pd
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
+# ==========================================
+# 数据库配置示例 (也可以通过环境变量传入)
+# ==========================================
+# 请根据实际环境修改以下连接信息
+# 格式: postgresql://[用户名]:[密码]@[主机]:[端口]/[数据库名]
+DB_URL = os.environ.get('DATABASE_URL', 'postgresql://dify_admin:Asdf.159753@39.108.221.22:9800/dify_memory')
+def create_tables(session):
+    print("初始化数据库表...")
+    session.execute(text("""
+        CREATE TABLE IF NOT EXISTS ingredients (
+            id SERIAL PRIMARY KEY,
+            inci_name VARCHAR UNIQUE,
+            cn_name VARCHAR,
+            cas_no VARCHAR
+        );
+        CREATE TABLE IF NOT EXISTS compliance_rules (
+            id SERIAL PRIMARY KEY,
+            ingredient_id INT REFERENCES ingredients(id),
+            region VARCHAR,
+            category VARCHAR,
+            status VARCHAR,
+            restrictions JSONB,
+            source_file VARCHAR
+        );
+    """))
+    session.commit()
+def upsert_ingredient(session, inci_name, cn_name=None, cas_no=None):
+    if pd.isna(inci_name) or str(inci_name).strip() == '':
+        return None
+    inci_name = str(inci_name).strip()
+    cn_name = str(cn_name).strip() if pd.notna(cn_name) else None
+    cas_no = str(cas_no).strip() if pd.notna(cas_no) else None
+    sql = text("""
+        INSERT INTO ingredients (inci_name, cn_name, cas_no)
+        VALUES (:inci_name, :cn_name, :cas_no)
+        ON CONFLICT (inci_name) DO UPDATE
+        SET cn_name = COALESCE(ingredients.cn_name, EXCLUDED.cn_name),
+            cas_no = COALESCE(ingredients.cas_no, EXCLUDED.cas_no)
+        RETURNING id;
+    """)
+    result = session.execute(sql, {'inci_name': inci_name, 'cn_name': cn_name, 'cas_no': cas_no})
+    return result.fetchone()[0]
+def upsert_rule(session, ingredient_id, region, category, status, restrictions, source_file):
+    if not ingredient_id:
+        return
+    sql = text("""
+        INSERT INTO compliance_rules (ingredient_id, region, category, status, restrictions, source_file)
+        SELECT :ingredient_id, :region, :category, :status, CAST(:restrictions AS JSONB), :source_file
+        WHERE NOT EXISTS (
+            SELECT 1 FROM compliance_rules
+            WHERE ingredient_id = :ingredient_id
+              AND region = :region
+              AND category = :category
+              AND source_file = :source_file
+        );
+    """)
+    res_str = json.dumps(restrictions, ensure_ascii=False) if restrictions else None
+    session.execute(sql, {
+        'ingredient_id': ingredient_id,
+        'region': region,
+        'category': category,
+        'status': status,
+        'restrictions': res_str,
+        'source_file': source_file
+    })
+def extract_inci_name_from_fda(color_name, other_names):
+    """从 FDA 色素表的 Other names 中提取核心 INCI 作为主键，优先提取类似 CI 75470 的编号"""
+    if pd.notna(other_names):
+        # 匹配 CI 加数字的模式，忽略大小写和中间可能存在的空格
+        match = re.search(r'(CI\s*\d+)', str(other_names), re.IGNORECASE)
+        if match:
+            # 格式化并返回如: CI 75470
+            return re.sub(r'\s+', ' ', match.group(1).upper()).strip()
+        # 如果没有 CI 号，取第一个逗号前的词
+        return str(other_names).split(',')[0].strip()
+    return str(color_name).strip() if pd.notna(color_name) else None
+def process_file_1(session, filepath):
+    print(f"正在处理: {filepath}")
+    df = pd.read_excel(filepath)
+    for _, row in df.iterrows():
+        cn_name = row['中文名称'] if '中文名称' in df.columns else row.iloc[1]
+        inci_name = row['英文名称'] if '英文名称' in df.columns else row.iloc[2]
+        ing_id = upsert_ingredient(session, inci_name, cn_name=cn_name)
+        if ing_id:
+            upsert_rule(
+                session, ing_id,
+                region='China',
+                category='Banned',
+                status='Prohibited',
+                restrictions=None,
+                source_file='化妆品禁用原料目录.xlsx'
+            )
+    session.commit()
+def process_file_2(session, filepath):
+    print(f"正在处理: {filepath}")
+    df = pd.read_excel(filepath)
+    for _, row in df.iterrows():
+        # 处理可能包含换行符的长列名，直接通过索引获取
+        cn_name = row.iloc[1]
+        inci_name = row.iloc[2]
+        ing_id = upsert_ingredient(session, inci_name, cn_name=cn_name)
+        if ing_id:
+            upsert_rule(
+                session, ing_id,
+                region='China',
+                category='Plant',
+                status='Prohibited',
+                restrictions=None,
+                source_file='化妆品禁用植（动）物原料目录.xlsx'
+            )
+    session.commit()
+def process_file_3(session, filepath):
+    print(f"正在处理: {filepath}")
+    df = pd.read_excel(filepath)
+    # 获取所有的列，以防列名带有额外空格
+    cols = df.columns.tolist()
+    cas_col = next((c for c in cols if 'CAS' in str(c)), cols[0])
+    color_col = next((c for c in cols if 'Color' in str(c)), cols[1] if len(cols)>1 else None)
+    use_col = next((c for c in cols if 'Use' in str(c)), cols[2] if len(cols)>2 else None)
+    rest_col = next((c for c in cols if 'RESTRICTIONS' in str(c).upper()), cols[3] if len(cols)>3 else None)
+    other_col = next((c for c in cols if 'Other name' in str(c)), cols[4] if len(cols)>4 else None)
+    for _, row in df.iterrows():
+        cas_no = row[cas_col] if cas_col else None
+        color_name = row[color_col] if color_col else None
+        other_names = row[other_col] if other_col else None
+        use_val = row[use_col] if use_col else None
+        restrictions_val = row[rest_col] if rest_col else None
+        inci_name = extract_inci_name_from_fda(color_name, other_names)
+        # 构建 restrictions JSONB
+        restrictions_dict = {
+            'Use': str(use_val).strip() if pd.notna(use_val) else None,
+            'RESTRICTIONS': str(restrictions_val).strip() if pd.notna(restrictions_val) else None
+        }
+        ing_id = upsert_ingredient(session, inci_name, cas_no=cas_no)
+        if ing_id:
+            upsert_rule(
+                session, ing_id,
+                region='USA',
+                category='Colorant',
+                status='Restricted', # 默认色素为限制使用
+                restrictions=restrictions_dict,
+                source_file='FDA 的色素专表.xlsx'
+            )
+    session.commit()
+def main():
+    base_dir = r'd:\my-web-os\excel'
+    file1 = os.path.join(base_dir, '化妆品禁用原料目录.xlsx')
+    file2 = os.path.join(base_dir, '化妆品禁用植（动）物原料目录.xlsx')
+    file3 = os.path.join(base_dir, 'FDA 的色素专表.xlsx')
+    engine = create_engine(DB_URL)
+    SessionManager = sessionmaker(bind=engine)
+    session = SessionManager()
+    try:
+        create_tables(session)
+        if os.path.exists(file1): process_file_1(session, file1)
+        if os.path.exists(file2): process_file_2(session, file2)
+        if os.path.exists(file3): process_file_3(session, file3)
+        print("所有数据导入成功！")
+    except Exception as e:
+        session.rollback()
+        print(f"发生错误: {e}")
+    finally:
+        session.close()
+if __name__ == "__main__":
+    main()
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+导入物料编码.xlsx 到 t_jy_material 表
+用法: python scripts/import_material.py
+"""
+import sys
+import io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+import openpyxl
+import psycopg2
+DB_CONFIG = {
+    "host": "39.108.221.22",
+    "port": 9800,
+    "database": "dify_memory",
+    "user": "postgres",
+    "password": "difyai123456"
+}
+EXCEL_PATH = r"d:\my-web-os\tmp\uploads\物料编码.xlsx"
+def main():
+    print("[1/4] 读取 Excel 文件...")
+    wb = openpyxl.load_workbook(EXCEL_PATH)
+    ws = wb.active
+    rows = list(ws.iter_rows(min_row=2, values_only=True))  # 跳过表头
+    print(f"      共 {len(rows)} 条物料记录")
+    print("[2/4] 连接数据库...")
+    conn = psycopg2.connect(**DB_CONFIG)
+    cur = conn.cursor()
+    print("[3/4] 建表（幂等）并清空旧数据...")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS t_jy_material (
+            id          SERIAL PRIMARY KEY,
+            itemno      VARCHAR(64)  NOT NULL,
+            itemname    VARCHAR(128) NOT NULL,
+            descript    VARCHAR(256),
+            created_at  TIMESTAMPTZ DEFAULT NOW()
+        );
+        CREATE INDEX IF NOT EXISTS idx_jy_material_itemno ON t_jy_material (itemno);
+    """)
+    conn.commit()
+    cur.execute("TRUNCATE TABLE t_jy_material RESTART IDENTITY;")
+    conn.commit()
+    print("[4/4] 导入数据...")
+    inserted = 0
+    for row in rows:
+        itemno, itemname, descript = row
+        if not itemno and not itemname:
+            continue
+        cur.execute(
+            "INSERT INTO t_jy_material (itemno, itemname, descript) VALUES (%s, %s, %s)",
+            (
+                str(itemno).strip() if itemno else '',
+                str(itemname).strip() if itemname else '',
+                str(descript).strip() if descript else None
+            )
+        )
+        inserted += 1
+    conn.commit()
+    cur.close()
+    conn.close()
+    print(f"[完成] 共插入 {inserted} 条记录到 t_jy_material 表。")
+if __name__ == "__main__":
+    main()
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import pool from '../server/db.js';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const databaseDir = path.join(__dirname, '../database');
+const sqlFiles = [
+    'create_missing_tables.sql',
+    'create_ai_image_tables.sql',
+    'create_knowledge_tables.sql',
+    'create_mock_quote_tables.sql',
+    // 'rebuild_knowledge_tables.sql', // 视情况而定，可能是可选的重建脚本
+    'seed_data.sql'
+];
+async function initDB() {
+    console.log('🔄 开始初始化数据库...');
+    try {
+        for (const file of sqlFiles) {
+            const filePath = path.join(databaseDir, file);
+            if (fs.existsSync(filePath)) {
+                console.log(`\n⏳ 正在执行 ${file}...`);
+                const sql = fs.readFileSync(filePath, 'utf8');
+                await pool.query(sql);
+                console.log(`✅ ${file} 执行完成`);
+            } else {
+                console.warn(`⚠️ 找不到文件: ${file}`);
+            }
+        }
+        console.log('\n🎉 数据库初始化成功！');
+    } catch (err) {
+        console.error('\n❌ 数据库初始化失败：', err.message);
+    } finally {
+        await pool.end();
+        process.exit(0);
+    }
+}
+initDB();
+import pkg from 'pg';
+const { Pool } = pkg;
+import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+dotenv.config({ path: path.join(__dirname, '../.env') });
+const pool = new Pool({
+    host: process.env.PG_HOST,
+    port: process.env.PG_PORT,
+    database: process.env.PG_DATABASE,
+    user: process.env.PG_USER,
+    password: process.env.PG_PASSWORD,
+});
+async function listTables() {
+    try {
+        const res = await pool.query("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name LIKE 'ref_%'");
+        console.log('Tables:', res.rows.map(r => r.table_name));
+    } catch (err) {
+        console.error(err);
+    } finally {
+        await pool.end();
+    }
+}
+listTables();
+import pkg from 'pg';
+const { Pool } = pkg;
+import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+dotenv.config({ path: path.join(__dirname, '../.env') });
+const pool = new Pool({
+    host: process.env.PG_HOST,
+    port: process.env.PG_PORT,
+    database: process.env.PG_DATABASE,
+    user: process.env.PG_USER,
+    password: process.env.PG_PASSWORD,
+});
+async function migrateAll() {
+    const tableConfigs = [
+        { table: 'ref_platforms', column: 'name' },
+        { table: 'ref_product_types', column: 'name' },
+        { table: 'ref_languages', column: 'name' },
+        { table: 'ref_certifications', column: 'name' },
+        { table: 'ref_pain_point_tags', column: 'name' }
+    ];
+    try {
+        for (const config of tableConfigs) {
+            console.log(`Migrating ${config.table}.${config.column} to JSONB...`);
+            // Check if column exists
+            const colCheck = await pool.query(`
+                SELECT data_type FROM information_schema.columns
+                WHERE table_name = $1 AND column_name = $2
+            `, [config.table, config.column]);
+            if (colCheck.rowCount === 0) {
+                console.log(`Column ${config.column} not found in ${config.table}, skipping.`);
+                continue;
+            }
+            if (colCheck.rows[0].data_type === 'jsonb') {
+                console.log(`Column ${config.column} is already JSONB.`);
+                continue;
+            }
+            // Create temp column
+            await pool.query(`ALTER TABLE ${config.table} ADD COLUMN IF NOT EXISTS ${config.column}_new JSONB DEFAULT '[]'::jsonb`);
+            // Migrate data
+            const rows = await pool.query(`SELECT id, ${config.column}::text as val FROM ${config.table}`);
+            for (const row of rows.rows) {
+                if (!row.val) continue;
+                const arr = row.val.split(/[\/、,，]+/).map(s => s.trim()).filter(Boolean);
+                await pool.query(`UPDATE ${config.table} SET ${config.column}_new = $1 WHERE id = $2`, [JSON.stringify(arr), row.id]);
+            }
+            // Replace column
+            await pool.query(`ALTER TABLE ${config.table} DROP COLUMN ${config.column}`);
+            await pool.query(`ALTER TABLE ${config.table} RENAME COLUMN ${config.column}_new TO ${config.column}`);
+            console.log(`✓ ${config.table} migration successful.`);
+        }
+    } catch (err) {
+        console.error('Migration failed:', err);
+    } finally {
+        await pool.end();
+    }
+}
+migrateAll();
+import pkg from 'pg';
+const { Pool } = pkg;
+import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+dotenv.config({ path: path.join(__dirname, '../.env') });
+const pool = new Pool({
+    host: process.env.PG_HOST,
+    port: process.env.PG_PORT,
+    database: process.env.PG_DATABASE,
+    user: process.env.PG_USER,
+    password: process.env.PG_PASSWORD,
+});
+async function migrate() {
+    try {
+        console.log('Adding module column...');
+        await pool.query("ALTER TABLE ref_target_markets ADD COLUMN IF NOT EXISTS module VARCHAR(50)");
+        console.log('Updating initial values...');
+        // 欧盟、马来西亚、印尼、东南亚 为研发部
+        await pool.query("UPDATE ref_target_markets SET module = 'beauty_rnd' WHERE name IN ('欧盟', '马来西亚', '印尼', '东南亚')");
+        // 越南、泰国 为营销部
+        await pool.query("UPDATE ref_target_markets SET module = 'sea_marketing' WHERE name IN ('越南', '泰国')");
+        // 补跑一下：如果马来西亚、印尼在营销部也有，可能需要手动调整。
+        // 但根据用户描述，当前的显示是一锅粥，所有有ID的市场都出来了。
+        await pool.query("UPDATE ref_target_markets SET module = 'sea_marketing' WHERE module IS NULL");
+        console.log('Migration complete.');
+    } catch (err) {
+        console.error(err);
+    } finally {
+        await pool.end();
+    }
+}
+migrate();
+const { Pool } = require('pg');
+const pool = new Pool({ user: 'dify_admin', host: '39.108.221.22', database: 'dify_memory', password: 'Asdf.159753', port: 9800 });
+pool.query('SELECT tablename FROM pg_tables WHERE schemaname = $1', ['public']).then(r => console.log(r.rows.map(x => x.tablename))).finally(() => pool.end());
+import pool from './db.js';
+async function main() {
+    try {
+        const res = await pool.query('SELECT username, role FROM sys_users');
+        console.log(JSON.stringify(res.rows, null, 2));
+    } catch (e) {
+        console.error(e);
+    } finally {
+        process.exit(0);
+    }
+}
+main();
+// 调试版本：保存完整响应用于分析
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import 'dotenv/config';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const DIFY_API_KEY = process.env.DIFY_CHATFLOW_API_KEY;
+const DIFY_API_URL = process.env.DIFY_CHATFLOW_API_URL;
+const salesData = JSON.parse(
+    fs.readFileSync(path.join(__dirname, 'public', 'sales_analysis_matrix.json'), 'utf-8')
+);
+console.log('🔍 调试模式：将保存完整响应到文件\n');
+try {
+    const queryContent = JSON.stringify(salesData, null, 2);
+    const response = await fetch(DIFY_API_URL, {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${DIFY_API_KEY}`,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            inputs: {
+                userinput: {
+                    query: queryContent
+                }
+            },
+            query: queryContent,
+            response_mode: 'streaming',
+            conversation_id: '',
+            user: 'system_forecast'
+        })
+    });
+    if (!response.ok) {
+        throw new Error(`API失败: ${response.status}`);
+    }
+    console.log('✅ API调用成功，读取响应...\n');
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let fullResponse = '';
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n').filter(line => line.trim());
+        for (const line of lines) {
+            if (line.startsWith('data: ')) {
+                const data = line.substring(6);
+                try {
+                    const parsed = JSON.parse(data);
+                    if (parsed.event === 'message' || parsed.event === 'agent_message') {
+                        fullResponse += parsed.answer || '';
+                    }
+                } catch (e) {
+                    // 忽略
+                }
+            }
+        }
+    }
+    console.log(`✅ 响应接收完成，长度: ${fullResponse.length}字符\n`);
+    // 保存完整响应
+    const responsePath = path.join(__dirname, 'dify_response_debug.txt');
+    fs.writeFileSync(responsePath, fullResponse, 'utf-8');
+    console.log(`💾 完整响应已保存到: ${responsePath}\n`);
+    // 尝试查找JSON
+    console.log('🔍 分析JSON位置...\n');
+    // 查找所有"forecast_results"出现的位置
+    const regex = /"forecast_results"/g;
+    let match;
+    let occurrences = 0;
+    while ((match = regex.exec(fullResponse)) !== null) {
+        occurrences++;
+        console.log(`  找到第${occurrences}个"forecast_results"，位置: ${match.index}`);
+        console.log(`  前后文: ...${fullResponse.substring(Math.max(0, match.index - 50), match.index + 100)}...\n`);
+    }
+    console.log(`共找到 ${occurrences} 个"forecast_results"字段\n`);
+    // 尝试提取JSON
+    if (occurrences > 0) {
+        console.log('尝试提取JSON对象...\n');
+        const firstIndex = fullResponse.indexOf('"forecast_results"');
+        let jsonStart = -1;
+        // 向前找最近的{
+        for (let i = firstIndex; i >= 0; i--) {
+            if (fullResponse[i] === '{') {
+                jsonStart = i;
+                break;
+            }
+        }
+        if (jsonStart !== -1) {
+            console.log(`  找到JSON起始位置: ${jsonStart}`);
+            console.log(`  起始字符: ${fullResponse.substring(jsonStart, jsonStart + 50)}...\n`);
+            // 匹配对应的}
+            let bracketCount = 0;
+            let jsonEnd = -1;
+            for (let i = jsonStart; i < fullResponse.length; i++) {
+                if (fullResponse[i] === '{') bracketCount++;
+                if (fullResponse[i] === '}') {
+                    bracketCount--;
+                    if (bracketCount === 0) {
+                        jsonEnd = i;
+                        break;
+                    }
+                }
+            }
+            if (jsonEnd !== -1) {
+                const jsonText = fullResponse.substring(jsonStart, jsonEnd + 1);
+                console.log(`  JSON结束位置: ${jsonEnd}`);
+                console.log(`  JSON长度: ${jsonText.length}字符\n`);
+                // 保存JSON
+                const jsonPath = path.join(__dirname, 'extracted_json_debug.json');
+                fs.writeFileSync(jsonPath, jsonText, 'utf-8');
+                console.log(`💾 提取的JSON已保存到: ${jsonPath}\n`);
+                try {
+                    const jsonContent = JSON.parse(jsonText);
+                    console.log('✅ JSON解析成功！\n');
+                    console.log(`  顶层字段: ${JSON.stringify(Object.keys(jsonContent))}\n`);
+                    if (jsonContent.forecast_results) {
+                        console.log(`  forecast_results类型: ${Array.isArray(jsonContent.forecast_results) ? 'Array' : typeof jsonContent.forecast_results}`);
+                        console.log(`  forecast_results长度: ${jsonContent.forecast_results.length}\n`);
+                        if (jsonContent.forecast_results.length > 0) {
+                            console.log(`  第一个元素: ${JSON.stringify(jsonContent.forecast_results[0], null, 2)}\n`);
+                        }
+                    }
+                } catch (parseError) {
+                    console.error(`❌ JSON解析失败: ${parseError.message}\n`);
+                    console.log(`  JSON前100字符: ${jsonText.substring(0, 100)}`);
+                }
+            } else {
+                console.log('  ⚠️ 未找到JSON结束位置');
+            }
+        } else {
+            console.log('  ⚠️ 未找到JSON起始位置');
+        }
+    }
+    console.log('\n🎉 调试完成！请检查保存的文件进行分析。');
+} catch (error) {
+    console.error('\n❌ 调试失败:', error.message);
+    process.exit(1);
+}
+import bcrypt from 'bcryptjs';
+// 获取命令行传入的明文密码参数
+const plainTextPassword = process.argv[2];
+if (!plainTextPassword) {
+    console.log('❌ 请提供需要加密的明文密码！');
+    console.log('💡 用法: node generate_hash.js <你的新密码>');
+    process.exit(1);
+}
+// 生成盐并混淆加密
+const salt = bcrypt.genSaltSync(10);
+const hash = bcrypt.hashSync(plainTextPassword, salt);
+console.log('\n✅ 密码加密成功！\n');
+console.log('明文密码:', plainTextPassword);
+console.log('加密结果:', hash);
+console.log('\n👉 请将上方以 $2a$ 开头的【加密结果】复制，并直接粘贴替换 require/users.json 中对应的 password 字段即可。');
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+// Mock data configuration
+const MOCK_CONFIG = {
+    count: 15,
+    highSeverityRate: 0.4, // 40% are high severity
+    negativeDeviationRate: 0.6 // 60% are negative (underperforming)
+};
+function generateMockTracking() {
+    console.log('Generating mock tracking data...');
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = today.getMonth() + 1;
+    const currentMonth = `${year}-${String(month).padStart(2, '0')}`;
+    const trackingDate = today.toISOString().split('T')[0];
+    // Simulate mid-month (15th)
+    const dayOfMonth = 15;
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const progressRatio = dayOfMonth / daysInMonth;
+    const deviations = [];
+    // Sample product names and SKUs
+    const products = [
+        { sku: 'SKU001', name: 'Premium Leather Wallet' },
+        { sku: 'SKU002', name: 'Wireless Bluetooth Earbuds' },
+        { sku: 'SKU003', name: 'Smart Fitness Tracker' },
+        { sku: 'SKU004', name: 'Ergonomic Office Chair' },
+        { sku: 'SKU005', name: 'Stainless Steel Water Bottle' },
+        { sku: 'SKU006', name: 'Noise Cancelling Headphones' },
+        { sku: 'SKU007', name: 'Portable Power Bank 20000mAh' },
+        { sku: 'SKU008', name: 'Mechanical Keyboard (Red Switch)' },
+        { sku: 'SKU009', name: '4K Webcam with Microphone' },
+        { sku: 'SKU010', name: 'Gaming Mouse 16000 DPI' },
+        { sku: 'SKU011', name: 'Laptop Stand Aluminum' },
+        { sku: 'SKU012', name: 'USB-C Hub 7-in-1' },
+        { sku: 'SKU013', name: 'Graphic Drawing Tablet' },
+        { sku: 'SKU014', name: 'Smart Home LED Bulb' },
+        { sku: 'SKU015', name: 'Resistance Bands Set' }
+    ];
+    for (let i = 0; i < products.length; i++) {
+        const product = products[i];
+        // Random forecast between 1000 and 10000
+        const forecastValue = Math.round(1000 + Math.random() * 9000);
+        const expectedProgress = Math.round(forecastValue * progressRatio);
+        // Random deviation (-80% to +80%)
+        // Ensure it's outside ±20% to be tracked
+        let randomDev;
+        do {
+            randomDev = (Math.random() * 1.6) - 0.8;
+        } while (Math.abs(randomDev) < 0.25); // At least 25% deviation
+        const actualCumulative = Math.round(expectedProgress * (1 + randomDev));
+        // Calculate derived metrics
+        const achievementRate = expectedProgress > 0 ? (actualCumulative / expectedProgress) * 100 : 100;
+        const deviationRate = achievementRate - 100;
+        const severity = Math.abs(deviationRate) > 30 ? 'high' : 'medium';
+        const suggestion = deviationRate < 0 ? 'decrease' : 'increase';
+        const adjustmentAmount = Math.round(Math.abs(forecastValue * deviationRate / 100));
+        deviations.push({
+            sku_id: product.sku,
+            product_name: product.name,
+            tracking_date: trackingDate,
+            forecast_value: forecastValue,
+            expected_progress: expectedProgress,
+            actual_cumulative: actualCumulative,
+            achievement_rate: Math.round(achievementRate),
+            deviation_rate: Math.round(deviationRate),
+            suggestion: suggestion,
+            adjustment_amount: adjustmentAmount,
+            severity: severity
+        });
+    }
+    // Sort by severity (high first) then by absolute deviation
+    deviations.sort((a, b) => {
+        if (a.severity === 'high' && b.severity !== 'high') return -1;
+        if (a.severity !== 'high' && b.severity === 'high') return 1;
+        return Math.abs(b.deviation_rate) - Math.abs(a.deviation_rate);
+    });
+    const trackingData = {
+        current_month: currentMonth,
+        last_tracking_date: trackingDate,
+        tracking_time: today.toISOString(),
+        progress_ratio: Math.round(progressRatio * 100),
+        deviations: deviations,
+        unread_alerts: deviations.length,
+        summary: {
+            total_skus: 91, // Updated to match monthly forecast total
+            deviation_count: deviations.length,
+            high_severity: deviations.filter(d => d.severity === 'high').length,
+            medium_severity: deviations.filter(d => d.severity === 'medium').length
+        }
+    };
+    const outputPath = path.join(__dirname, 'public', 'forecast_tracking.json');
+    // Ensure public dir exists
+    const publicDir = path.join(__dirname, 'public');
+    if (!fs.existsSync(publicDir)) {
+        fs.mkdirSync(publicDir, { recursive: true });
+    }
+    fs.writeFileSync(outputPath, JSON.stringify(trackingData, null, 2));
+    console.log(`Successfully generated mock tracking data at: ${outputPath}`);
+    console.log(`- Total deviations: ${deviations.length}`);
+    console.log(`- High severity: ${trackingData.summary.high_severity}`);
+    console.log(`- Medium severity: ${trackingData.summary.medium_severity}`);
+}
+generateMockTracking();
+import fs from 'fs';
+import path from 'path';
+import bcrypt from 'bcryptjs';
+import { fileURLToPath } from 'url';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const usersPath = path.join(__dirname, 'require', 'users.json');
+async function migratePasswords() {
+    if (!fs.existsSync(usersPath)) {
+        console.log('users.json 不存在');
+        return;
+    }
+    const users = JSON.parse(fs.readFileSync(usersPath, 'utf8'));
+    let modified = false;
+    for (let i = 0; i < users.length; i++) {
+        const user = users[i];
+        // 如果密码没有经过 bcrypt 加密 (通常 $2a$ 开头)
+        if (!user.password.startsWith('$2a$') && !user.password.startsWith('$2b$')) {
+            console.log(`Migrating password for user: ${user.username}`);
+            // 使用同步或异步皆可，脚本用同步就行
+            const salt = bcrypt.genSaltSync(10);
+            user.password = bcrypt.hashSync(user.password, salt);
+            modified = true;
+        }
+    }
+    if (modified) {
+        fs.writeFileSync(usersPath, JSON.stringify(users, null, 4), 'utf8');
+        console.log('迁移完毕，所有的用户明文密码均已被加密。');
+    } else {
+        console.log('无需迁移，密码均以受保护形式存在。');
+    }
+}
+migratePasswords();
+import pool from './db.js';
+const seedData = async () => {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    console.log('开始插入初始数据...');
+    // 1. 新闻关键词
+    const newsKeywords = [
+        ['科技前沿', 'AI大模型', 1], ['科技前沿', '半导体', 2], ['科技前沿', '商业航天', 3], ['科技前沿', '仿生机器人', 4], ['科技前沿', '低空经济', 5], ['科技前沿', '量子计算', 6],
+        ['金融资本', '宏观政策', 1], ['金融资本', '投融资', 2], ['金融资本', 'IPO动态', 3], ['金融资本', '股市纵览', 4], ['金融资本', '数字货币', 5], ['金融资本', '美联储', 6],
+        ['行业聚焦', '美妆', 1], ['行业聚焦', '服饰', 2], ['行业聚焦', '食品', 3], ['行业聚焦', '电商出海', 4], ['行业聚焦', '跨境贸易', 5],
+        ['地域资讯', '粤港澳大湾区', 1], ['地域资讯', '汕头', 2], ['地域资讯', '广州', 3], ['地域资讯', '深圳', 4], ['地域资讯', '香港', 5], ['地域资讯', '长三角', 6], ['地域资讯', '海外市场', 7],
+        ['热点人物', '马斯克', 1], ['热点人物', '黄仁勋', 2], ['热点人物', '库克', 3], ['热点人物', '雷军', 4], ['热点人物', '奥特曼(Sam Altman)', 5]
+    ];
+    for (const [group, kw, order] of newsKeywords) {
+        await client.query(`INSERT INTO ref_news_keywords (group_name, keyword, sort_order, is_active) VALUES ($1, $2, $3, true) ON CONFLICT DO NOTHING`, [group, kw, order]);
+    }
+    // 2. 产品类别
+    const productTypes = [
+        ['beauty_rnd', '清透粉底液', 1], ['beauty_rnd', '持妆粉底液', 2], ['beauty_rnd', '高遮瑕粉底液', 3],
+        ['market', '口红', 1], ['market', '粉饼', 2], ['market', '粉底液', 3], ['market', '眼影', 4], ['market', '面膜', 5], ['market', '精华', 6], ['market', '卸妆产品', 7]
+    ];
+    for (const [mod, name, order] of productTypes) {
+        await client.query(`INSERT INTO ref_product_types (module, name, sort_order, is_active) VALUES ($1, $2, $3, true) ON CONFLICT DO NOTHING`, [mod, name, order]);
+    }
+    // 3. 目标市场
+    const targetMarkets = [
+        ['beauty_rnd', '欧盟', 1], ['beauty_rnd', '马来西亚', 2], ['beauty_rnd', '印尼', 3], ['beauty_rnd', '东南亚', 4]
+    ];
+    for (const [mod, name, order] of targetMarkets) {
+        await client.query(`INSERT INTO ref_target_markets (module, name, sort_order, is_active) VALUES ($1, $2, $3, true) ON CONFLICT DO NOTHING`, [mod, name, order]);
+    }
+    // 4. 用户痛点标签
+    const painPoints = [
+        ['清爽', 1], ['控油', 2], ['哑光', 3], ['高遮瑕', 4], ['不闷痘', 5], ['抗汗防水', 6], ['日常持妆', 7], ['自然提亮', 8]
+    ];
+    for (const [name, order] of painPoints) {
+        await client.query(`INSERT INTO ref_pain_point_tags (name, sort_order, is_active) VALUES ($1, $2, true) ON CONFLICT DO NOTHING`, [name, order]);
+    }
+    // 5. 认证
+    const certs = [
+        ['BPOM 清真', '印尼', 1], ['REACH 合规', '欧盟', 2], ['无认证', '全球', 3]
+    ];
+    for (const [name, region, order] of certs) {
+        await client.query(`INSERT INTO ref_certifications (name, region, sort_order, is_active) VALUES ($1, $2, $3, true) ON CONFLICT DO NOTHING`, [name, region, order]);
+    }
+    // 6. 目标语种
+    const languages = [
+        ['en', '英语', '🇬🇧', 1], ['id', '印尼语', '🇮🇩', 2], ['vi', '越南语', '🇻🇳', 3], ['th', '泰语', '🇹🇭', 4]
+    ];
+    for (const [code, name, emoji, order] of languages) {
+        await client.query(`INSERT INTO ref_languages (code, name, flag_emoji, sort_order, is_active) VALUES ($1, $2, $3, $4, true) ON CONFLICT DO NOTHING`, [code, name, emoji, order]);
+    }
+    // 7. 目标平台
+    const platforms = [
+        ['TikTok', '短视频/直播带货', 1], ['Shopee', '电商平台', 2], ['Lazada', '电商平台', 3]
+    ];
+    for (const [name, desc, order] of platforms) {
+        await client.query(`INSERT INTO ref_platforms (name, description, label, sort_order, is_active) VALUES ($1, $2, $3, $4, true) ON CONFLICT DO NOTHING`, [name, desc, desc, order]);
+    }
+    // 8. 营销风格
+    const styles = [
+        ['种草风格', 1], ['专业风格', 2], ['平价风格', 3]
+    ];
+    for (const [name, order] of styles) {
+        await client.query(`INSERT INTO ref_marketing_styles (name, sort_order, is_active) VALUES ($1, $2, true) ON CONFLICT DO NOTHING`, [name, order]);
+    }
+    await client.query('COMMIT');
+    console.log('所有初始数据插入成功！');
+  } catch (e) {
+    await client.query('ROLLBACK');
+    console.error('插入失败：', e);
+  } finally {
+    client.release();
+    process.exit(0);
+  }
+};
+seedData();
+import yaml
+dsl_path = r'd:\my-web-os\tmp\uploads\物料匹配&报价审核__0723copy.yml'
+out_path = r'd:\my-web-os\tmp\uploads\物料匹配_带记忆库_最新.yml'
+with open(dsl_path, 'r', encoding='utf-8') as f:
+    data = yaml.safe_load(f)
+# Find the knowledge-retrieval node and update dataset_ids
+for node in data.get('workflow', {}).get('graph', {}).get('nodes', []):
+    if node.get('data', {}).get('type') == 'knowledge-retrieval':
+        node['data']['dataset_ids'].append('17482fe4-8818-4570-9cf6-7d30d14de84f')
+# Find the LLM_专业报价建议 node and update the prompt
+for node in data.get('workflow', {}).get('graph', {}).get('nodes', []):
+    if node.get('data', {}).get('title') == 'LLM_专业报价建议':
+        prompt_templates = node.get('data', {}).get('prompt_template', [])
+        for prompt in prompt_templates:
+            if prompt.get('role') == 'system':
+                text = prompt.get('text', '')
+                insert_idx = text.find('====================\n【强制规则！必须严格遵守】')
+                if insert_idx != -1:
+                    new_rules = """【纠错记忆优先规则（最高优先级）】
+若知识库检索结果（{{#context#}}）中存在来源为"纠错记忆库"的记录，且客户名称与当前客户匹配，
+则将该记录的物料作为 match_1（首选），并在 quote_suggestion 中标注"✅ 历史记忆匹配"。
+纠错记忆库的结果权重高于普通物料知识库，不得被普通知识库的结果覆盖。
+"""
+                    text = text[:insert_idx + 21] + "\n" + new_rules + text[insert_idx + 21:]
+                    prompt['text'] = text
+with open(out_path, 'w', encoding='utf-8') as f:
+    yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+print('Updated DSL saved to 物料匹配_带记忆库_最新.yml')
+import yaml
+dsl_path = r'd:\my-web-os\tmp\uploads\物料匹配&报价审核__0723copy.yml'
+out_path = r'd:\my-web-os\tmp\uploads\物料匹配_带记忆库_最新.yml'
+with open(dsl_path, 'r', encoding='utf-8') as f:
+    data = yaml.safe_load(f)
+for node in data.get('workflow', {}).get('graph', {}).get('nodes', []):
+    if node.get('data', {}).get('type') == 'knowledge-retrieval':
+        if '17482fe4-8818-4570-9cf6-7d30d14de84f' not in node['data']['dataset_ids']:
+            node['data']['dataset_ids'].append('17482fe4-8818-4570-9cf6-7d30d14de84f')
+    if node.get('data', {}).get('title') == 'LLM_专业报价建议':
+        prompt_templates = node.get('data', {}).get('prompt_template', [])
+        for prompt in prompt_templates:
+            if prompt.get('role') == 'system':
+                text = prompt.get('text', '')
+                insert_idx = text.find('====================\n【强制规则！必须严格遵守】')
+                if insert_idx != -1 and '纠错记忆优先规则' not in text:
+                    new_rules = """【纠错记忆优先规则（最高优先级）】
+若知识库检索结果（{{#context#}}）中存在来源为"纠错记忆库"的记录，且客户名称与当前客户匹配，
+则将该记录的物料作为 match_1（首选），并在 quote_suggestion 中标注"✅ 历史记忆匹配"。
+纠错记忆库的结果权重高于普通物料知识库，不得被普通知识库的结果覆盖。
+"""
+                    text = text[:insert_idx + 21] + "\n" + new_rules + text[insert_idx + 21:]
+                    prompt['text'] = text
+with open(out_path, 'w', encoding='utf-8') as f:
+    yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
+print('Updated DSL saved to 物料匹配_带记忆库_最新.yml')

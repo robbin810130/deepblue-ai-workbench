@@ -1,0 +1,27 @@
+# 构建上下文瘦身（仓库共 ~768M，node_modules 占 440M）
+node_modules
+.git
+.gitignore
+
+# 构建产物：镜像内重新生成，没必要传进上下文
+dist
+dist.next
+dist.next-release
+dist-ssr
+
+# 敏感与临时
+.env
+.env.*
+!.env.example
+logs
+*.log
+temp
+tmp
+archive
+.pm2
+.pm2/
+
+# 编辑器
+.DS_Store
+.vscode
+.idea
