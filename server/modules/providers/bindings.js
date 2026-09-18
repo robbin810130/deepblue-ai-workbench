@@ -1,0 +1,744 @@
+/**
+ * WorkflowBinding 注册表 —— 技能与执行体之间的**唯一映射层**
+ *
+ * 文档依据：
+ *   - 04_Dify接入规范 §3  Skill 是稳定业务对象，WorkflowBinding 是可替换技术实现
+ *   - 04_Dify接入规范 §6  配置规范：DIFY_BASE_URL 不得硬编码
+ *   - 04_Dify接入规范 §12 禁止为每个页面各写一套 Dify Client
+ *   - 09 §1              版本号 major.minor
+ *
+ * 本层一次性解决四个现状问题：
+ *   ① 97 个 DIFY_* 变量散落在 84 行配置里，与业务技能无任何关联
+ *   ② 生产 IP 39.108.221.22 硬编码 40 次 / 14 个文件（漏配环境变量会把数据静默发到生产）
+ *   ③ 工作流没有版本概念，改了变量名线上任务直接崩
+ *   ④ 换 Dify 实例要改 14 个文件
+ *
+ * ⚠️ 铁律：本文件**只登记环境变量名，不登记任何真实地址与密钥**。
+ *    没有默认值可以回退到公网地址 —— 缺配置就报错，绝不静默连生产。
+ */
+
+/** Provider 类型 */
+export const PROVIDER_TYPES = Object.freeze(['dify', 'ark', 'internal']);
+
+/**
+ * @typedef {Object} WorkflowBinding
+ * @property {string} binding_key        绑定标识（与 skill_key 同名，或复用时显式登记）
+ * @property {'dify'|'ark'|'internal'} provider
+ * @property {string} display_name       人类可读名（用于运维页与错误信息）
+ * @property {string} [base_url_env]     主地址环境变量名
+ * @property {string[]} [base_url_fallback_envs] 回退链（按顺序尝试）
+ * @property {string} [api_key_env]      主密钥环境变量名
+ * @property {string[]} [api_key_fallback_envs]
+ * @property {'workflow'|'chat'|'file'|'none'} endpoint_kind
+ * @property {string} [extra_model_env]  图像/视频类模型名环境变量
+ * @property {string} version            major.minor，文档 09 §1
+ * @property {number} timeout_ms
+ * @property {'active'|'inactive'|'pending'} status
+ * @property {string[]} [datasets]       关联的知识库（可选）
+ * @property {string} [note]
+ */
+
+/** 全局回退链：仅在绑定自身未配置时使用（文档 04 §6 要求集中配置） */
+const GLOBAL_URL_FALLBACKS = ['DIFY_API_BASE_URL', 'DIFY_BASE_URL'];
+const GLOBAL_KEY_FALLBACKS = ['DIFY_API_KEY'];
+
+/**
+ * 全量绑定清单。
+ * 顺序与 catalog 的场景顺序一致，便于人工核对。
+ * @type {readonly WorkflowBinding[]}
+ */
+export const BINDINGS = Object.freeze([
+    // ── 市场与客户 ────────────────────────────────────────────
+    {
+        binding_key: 'market_insight',
+        provider: 'dify',
+        display_name: '市场洞察',
+        base_url_env: 'DIFY_MARKET_INSIGHT_API_URL',
+        api_key_env: 'DIFY_MARKET_INSIGHT_API_KEY',
+        endpoint_kind: 'chat',
+        version: '1.0',
+        timeout_ms: 120000,
+        status: 'active',
+    },
+    {
+        binding_key: 'marketing_forecast',
+        provider: 'dify',
+        display_name: '营销预测（月度/季度）',
+        base_url_env: 'DIFY_CHATFLOW_API_URL',
+        api_key_env: 'DIFY_CHATFLOW_API_KEY',
+        endpoint_kind: 'chat',
+        version: '1.0',
+        timeout_ms: 120000,
+        status: 'active',
+        note: '调用前经 maskingUtils 做品牌脱敏；该工作流被多处复用，改名需评估影响面',
+    },
+    {
+        binding_key: 'customer_analysis',
+        provider: 'dify',
+        display_name: '客户分析（特征提取）',
+        base_url_env: 'DIFY_CUSTOMER_FEATURE_EXTRACT_API_URL',
+        api_key_env: 'DIFY_CUSTOMER_FEATURE_EXTRACT_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 120000,
+        status: 'active',
+    },
+    {
+        binding_key: 'marketing_analysis',
+        provider: 'dify',
+        display_name: '营销分析',
+        base_url_env: 'DIFY_MARKETING_ANALYSIS_API_URL',
+        api_key_env: 'DIFY_MARKETING_ANALYSIS_API_KEY',
+        endpoint_kind: 'chat',
+        version: '1.0',
+        timeout_ms: 180000,
+        status: 'active',
+    },
+    {
+        binding_key: 'review_partner',
+        provider: 'dify',
+        display_name: '复盘搭子（主流程）',
+        base_url_env: 'DIFY_REVIEW_PARTNER_API_URL',
+        api_key_env: 'DIFY_REVIEW_PARTNER_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 300000,
+        status: 'active',
+        note: '复合技能，另绑定 3 个专项工作流：review_partner.mini_program / .order_page / .transaction',
+    },
+    {
+        binding_key: 'review_partner.mini_program',
+        provider: 'dify',
+        display_name: '复盘搭子 · 小程序',
+        base_url_env: 'DIFY_MINI_PROGRAM_API_URL',
+        api_key_env: 'DIFY_MINI_PROGRAM_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 300000,
+        status: 'active',
+    },
+    {
+        binding_key: 'review_partner.order_page',
+        provider: 'dify',
+        display_name: '复盘搭子 · 订单页',
+        base_url_env: 'DIFY_ORDER_PAGE_API_URL',
+        api_key_env: 'DIFY_ORDER_PAGE_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 300000,
+        status: 'active',
+    },
+    {
+        binding_key: 'review_partner.transaction',
+        provider: 'dify',
+        display_name: '复盘搭子 · 交易分析',
+        base_url_env: 'DIFY_TRANSACTION_API_URL',
+        api_key_env: 'DIFY_TRANSACTION_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 300000,
+        status: 'active',
+    },
+    {
+        binding_key: 'sea_marketing',
+        provider: 'dify',
+        display_name: '出海营销',
+        base_url_env: 'DIFY_SEA_MARKETING_API_URL',
+        api_key_env: 'DIFY_SEA_MARKETING_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 180000,
+        status: 'active',
+    },
+    {
+        binding_key: 'key_account',
+        provider: 'dify',
+        display_name: '大客户档案',
+        base_url_env: 'DIFY_KA_ACCOUNT_API_URL',
+        api_key_env: 'DIFY_KA_ACCOUNT_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 120000,
+        status: 'active',
+    },
+
+    // ── 合同与招投标 ──────────────────────────────────────────
+    {
+        binding_key: 'contract_review',
+        provider: 'dify',
+        display_name: '合同审核',
+        base_url_env: 'DIFY_CONTRACT_AUDIT_API_URL',
+        api_key_env: 'DIFY_CONTRACT_AUDIT_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 180000,
+        status: 'active',
+        note: '★ 试点技能；另复用 rules_assistant 工作流做条款比对',
+    },
+    {
+        binding_key: 'qualification',
+        provider: 'dify',
+        display_name: '资质管理',
+        base_url_env: 'DIFY_QUALIFICATION_API_URL',
+        api_key_env: 'DIFY_QUALIFICATION_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 90000,
+        status: 'active',
+    },
+    {
+        binding_key: 'tender_search',
+        provider: 'dify',
+        display_name: '招标检索',
+        base_url_env: 'DIFY_TENDER_SEARCH_API_URL',
+        api_key_env: 'DIFY_TENDER_SEARCH_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 180000,
+        status: 'active',
+        datasets: ['DIFY_TENDER_KNOWLEDGE_DATASET_ID'],
+        note: '复合技能，另有 tender_search.detail / tender_search.result 两个子绑定',
+    },
+    {
+        binding_key: 'tender_search.detail',
+        provider: 'dify',
+        display_name: '招标 · 详情解析',
+        base_url_env: 'DIFY_TENDER_DETAIL_API_URL',
+        api_key_env: 'DIFY_TENDER_DETAIL_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 120000,
+        status: 'active',
+    },
+    {
+        binding_key: 'tender_search.result',
+        provider: 'dify',
+        display_name: '招标 · 结果分析',
+        base_url_env: 'DIFY_TENDER_RESULT_API_URL',
+        api_key_env: 'DIFY_TENDER_RESULT_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 120000,
+        status: 'active',
+    },
+    {
+        binding_key: 'bid_assistant',
+        provider: 'dify',
+        display_name: '投标助手',
+        base_url_env: 'DIFY_BID_ASSISTANT_API_URL',
+        api_key_env: 'DIFY_BID_ASSISTANT_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 300000,
+        status: 'pending',
+        note: '⚠️ 待确认：bidAssistantRoutes.js（42KB）全文件未见 DIFY_ 变量，需确认其实际执行体',
+    },
+    {
+        binding_key: 'enterprise_qualification',
+        provider: 'dify',
+        display_name: '企业资质库（识别）',
+        base_url_env: 'DIFY_EQ_AI_RECOGNIZE_API_URL',
+        api_key_env: 'DIFY_EQ_AI_RECOGNIZE_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 180000,
+        status: 'active',
+        datasets: ['DIFY_EQ_KNOWLEDGE_DATASET_ID'],
+        note: '另绑定独立资质知识库 DIFY_EQ_KNOWLEDGE_*',
+    },
+    {
+        binding_key: 'enterprise_qualification.knowledge',
+        provider: 'dify',
+        display_name: '企业资质库 · 知识检索',
+        base_url_env: 'DIFY_EQ_KNOWLEDGE_API_URL',
+        api_key_env: 'DIFY_EQ_KNOWLEDGE_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 120000,
+        status: 'active',
+    },
+
+    // ── 商品与供应链 ──────────────────────────────────────────
+    {
+        binding_key: 'order_recognition',
+        provider: 'dify',
+        display_name: '订单识别',
+        base_url_env: 'DIFY_ORDER_RECOGNITION_API_URL',
+        api_key_env: 'DIFY_ORDER_RECOGNITION_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 180000,
+        status: 'pending',
+        note: '⚠️ 待确认：现有实现用 sys_order_recognitions 表落库 + /memory 端点写入 Dify 知识库，主识别工作流的变量名需二次确认',
+    },
+    {
+        binding_key: 'product_entry',
+        provider: 'dify',
+        display_name: '商品库录入',
+        base_url_env: 'DIFY_PRODUCT_ENTRY_API_URL',
+        api_key_env: 'DIFY_PRODUCT_ENTRY_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 180000,
+        status: 'active',
+    },
+    {
+        binding_key: 'product_selection',
+        provider: 'dify',
+        display_name: '选品策略',
+        base_url_env: 'DIFY_PRODUCT_SELECTION_API_URL',
+        api_key_env: 'DIFY_PRODUCT_SELECTION_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 180000,
+        status: 'active',
+    },
+    {
+        binding_key: 'product_library',
+        provider: 'dify',
+        display_name: '选品库',
+        base_url_env: 'DIFY_PRODUCT_LIBRARY_API_URL',
+        api_key_env: 'DIFY_PRODUCT_LIBRARY_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 180000,
+        status: 'active',
+    },
+    {
+        binding_key: 'quote_verify',
+        provider: 'dify',
+        display_name: '核查报价',
+        base_url_env: 'DIFY_QUOTE_VERIFY_API_URL',
+        api_key_env: 'DIFY_QUOTE_VERIFY_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 180000,
+        status: 'active',
+        note: '另绑定文件解析工作流 quote_verify.file',
+    },
+    {
+        binding_key: 'quote_verify.file',
+        provider: 'dify',
+        display_name: '核查报价 · 文件解析',
+        base_url_env: 'DIFY_QUOTE_VERIFY_FILE_API_URL',
+        api_key_env: 'DIFY_QUOTE_VERIFY_FILE_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 180000,
+        status: 'active',
+    },
+    {
+        binding_key: 'invoice_verify',
+        provider: 'dify',
+        display_name: '发票校验',
+        base_url_env: 'DIFY_INVOICE_VERIFY_API_URL',
+        api_key_env: 'DIFY_INVOICE_VERIFY_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 90000,
+        status: 'active',
+        note: '★ 试点技能',
+    },
+    {
+        binding_key: 'material_quote',
+        provider: 'dify',
+        display_name: '物料报价',
+        base_url_env: 'DIFY_MATERIAL_QUOTE_API_URL',
+        api_key_env: 'DIFY_MATERIAL_QUOTE_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 180000,
+        status: 'active',
+        note: '👻 对应技能 live=false（缺前端入口）；另有本地定价分析服务 pricingAnalysisService 参与计算',
+    },
+    {
+        binding_key: 'logistics_fee',
+        provider: 'dify',
+        display_name: '物流费计算',
+        base_url_env: 'DIFY_LOGISTICS_RECOGNIZE_API_URL',
+        api_key_env: 'DIFY_LOGISTICS_RECOGNIZE_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 120000,
+        status: 'active',
+    },
+    {
+        binding_key: 'beauty_rnd',
+        provider: 'dify',
+        display_name: '美妆研发',
+        base_url_env: 'DIFY_BEAUTY_RND_API_URL',
+        api_key_env: 'DIFY_BEAUTY_RND_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 180000,
+        status: 'active',
+    },
+
+    // ── 内容与营销 ────────────────────────────────────────────
+    {
+        binding_key: 'ai_image',
+        provider: 'ark',
+        display_name: '电商生图（火山方舟 Doubao）',
+        base_url_env: 'ARK_BASE_URL',
+        api_key_env: 'ARK_API_KEY',
+        extra_model_env: 'ARK_IMAGE_MODEL',
+        endpoint_kind: 'none',
+        version: '1.0',
+        timeout_ms: 300000,
+        status: 'active',
+        note: '⚠️ 该技能**不走 Dify**：实现直连火山方舟 Doubao（model 默认 doubao-seedream-4-5-251128），是 Provider 抽象必须支持多实现方的直接证据',
+    },
+    {
+        binding_key: 'layout_compare',
+        provider: 'dify',
+        display_name: '版式对比',
+        base_url_env: 'DIFY_LAYOUT_COMPARE_API_URL',
+        api_key_env: 'DIFY_LAYOUT_COMPARE_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 180000,
+        status: 'active',
+    },
+    {
+        binding_key: 'video_gen',
+        provider: 'dify',
+        display_name: '视频生成',
+        base_url_env: 'DIFY_VIDEOGEN_API_URL',
+        api_key_env: 'DIFY_VIDEOGEN_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 600000,
+        status: 'active',
+    },
+    {
+        binding_key: 'doc_copywriting',
+        provider: 'dify',
+        display_name: '文档文案',
+        base_url_env: 'DIFY_DOC_COPYWRITING_API_URL',
+        api_key_env: 'DIFY_DOC_COPYWRITING_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 120000,
+        status: 'pending',
+        note: '⚠️ 待确认：.env.example 中未见 DOC_COPYWRITING 变量，需确认其执行体',
+    },
+    {
+        binding_key: 'risk_detection',
+        provider: 'dify',
+        display_name: '风险检测（电商）',
+        base_url_env: 'DIFY_ECOM_RISK_API_URL',
+        api_key_env: 'DIFY_ECOM_RISK_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 180000,
+        status: 'active',
+        note: '按 scope 分流：电商线用本条，研发线用 risk_detection.rnd',
+    },
+    {
+        binding_key: 'risk_detection.rnd',
+        provider: 'dify',
+        display_name: '风险检测（研发）',
+        base_url_env: 'DIFY_RND_RISK_API_URL',
+        api_key_env: 'DIFY_RND_RISK_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 180000,
+        status: 'active',
+    },
+    {
+        binding_key: 'hazard_detection',
+        provider: 'dify',
+        display_name: '隐患检测',
+        base_url_env: 'DIFY_API_BASE_URL',
+        api_key_env: 'DIFY_API_KEY_HAZARD',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 180000,
+        status: 'active',
+        note: '该绑定只有专属密钥（DIFY_API_KEY_HAZARD），地址复用全局 DIFY_API_BASE_URL',
+    },
+
+    // ── 企业知识 ──────────────────────────────────────────────
+    {
+        binding_key: 'knowledge_base',
+        provider: 'dify',
+        display_name: '知识库',
+        base_url_env: 'DIFY_KNOWLEDGE_API_URL',
+        api_key_env: 'DIFY_KNOWLEDGE_API_KEY',
+        endpoint_kind: 'chat',
+        version: '1.0',
+        timeout_ms: 180000,
+        status: 'active',
+        datasets: ['DIFY_KNOWLEDGE_DATASET_ID'],
+        note: '主知识库，另经 services/difyKnowledgeService.js 走 /datasets 接口做文档管理',
+    },
+    {
+        binding_key: 'daily_news',
+        provider: 'dify',
+        display_name: '每日推送',
+        base_url_env: 'DIFY_NEWS_ANALYZE_API_URL',
+        api_key_env: 'DIFY_NEWS_ANALYZE_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 180000,
+        status: 'active',
+        note: '另绑定 daily_news.fetch（资讯抓取）',
+    },
+    {
+        binding_key: 'daily_news.fetch',
+        provider: 'dify',
+        display_name: '每日推送 · 资讯抓取',
+        base_url_env: 'DIFY_NEWS_API_URL',
+        api_key_env: 'DIFY_NEWS_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 180000,
+        status: 'active',
+    },
+    {
+        binding_key: 'meeting_minutes',
+        provider: 'dify',
+        display_name: '会议纪要',
+        base_url_env: 'DIFY_MEETING_MINUTES_API_URL',
+        api_key_env: 'DIFY_MEETING_MINUTES_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 900000,
+        status: 'active',
+        note: '👻 对应技能 live=false；另绑定导出工作流 meeting_minutes.export。音频转写耗时长，超时放宽至 15 分钟',
+    },
+    {
+        binding_key: 'meeting_minutes.export',
+        provider: 'dify',
+        display_name: '会议纪要 · 导出',
+        base_url_env: 'DIFY_MEETING_MINUTES_EXPORT_API_URL',
+        api_key_env: 'DIFY_MEETING_MINUTES_EXPORT_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 180000,
+        status: 'active',
+    },
+    {
+        binding_key: 'digital_employee',
+        provider: 'dify',
+        display_name: '数字员工',
+        base_url_env: 'DIFY_DIGITAL_EMPLOYEE_API_URL',
+        api_key_env: 'DIFY_DIGITAL_EMPLOYEE_API_KEY',
+        endpoint_kind: 'chat',
+        version: '1.0',
+        timeout_ms: 180000,
+        status: 'active',
+        note: '👻 对应技能 live=false',
+    },
+    {
+        binding_key: 'doc_drafting',
+        provider: 'dify',
+        display_name: '文档起草',
+        base_url_env: 'DIFY_DOC_DRAFTING_API_URL',
+        api_key_env: 'DIFY_DOC_DRAFTING_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 180000,
+        status: 'active',
+        note: '👻 对应技能 live=false',
+    },
+    {
+        binding_key: 'rules_assistant',
+        provider: 'dify',
+        display_name: '公司制度助手',
+        base_url_env: 'DIFY_RULES_ASSISTANT_API_URL',
+        api_key_env: 'DIFY_RULES_ASSISTANT_API_KEY',
+        endpoint_kind: 'chat',
+        version: '1.0',
+        timeout_ms: 180000,
+        status: 'active',
+        note: '👻 对应技能 live=false；同时被 contract_review 复用做条款比对',
+    },
+
+    // ── 经营分析 ──────────────────────────────────────────────
+    {
+        binding_key: 'business_dashboard',
+        provider: 'dify',
+        display_name: '看板生成助手',
+        base_url_env: 'DIFY_BUSINESS_DASHBOARD_BASE_URL',
+        base_url_fallback_envs: ['DIFY_API_BASE_URL'],
+        api_key_env: 'DIFY_BUSINESS_DASHBOARD_API_KEY',
+        api_key_fallback_envs: ['DIFY_WORKFLOW_API_KEY'],
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 300000,
+        status: 'active',
+        note: '🔴 现有实现有一处硬编码 IP 回退（|| http://39.108.221.22/v1）。纳入本表后必须去掉该回退，否则客户私有化部署会静默把数据发到生产环境',
+    },
+
+    // ── 系统（平台内部实现，无外部 Provider）───────────────────
+    {
+        binding_key: 'internal',
+        provider: 'internal',
+        display_name: '平台内部实现',
+        endpoint_kind: 'none',
+        version: '1.0',
+        timeout_ms: 0,
+        status: 'active',
+        note: '约定值：用户/权限/个人中心/审计/看板聚合等纯业务技能使用，不涉及任何外部 AI 调用',
+    },
+
+    // ── 已存在但暂无对应技能（反向缺口，供裁决）─────────────────
+    {
+        binding_key: 'order_suggestion',
+        provider: 'dify',
+        display_name: '订单建议（未接入）',
+        base_url_env: 'DIFY_ORDER_SUGGESTION_API_URL',
+        api_key_env: 'DIFY_ORDER_SUGGESTION_API_KEY',
+        endpoint_kind: 'workflow',
+        version: '1.0',
+        timeout_ms: 180000,
+        status: 'pending',
+        note: '🔍 反向缺口：环境变量与工作流已就绪，但 appRegistry 与技能表中都没有对应应用。需裁决：补 UI 上线，还是确认废弃后清理密钥',
+    },
+]);
+
+/** binding_key → binding */
+const BINDING_INDEX = new Map(BINDINGS.map((b) => [b.binding_key, b]));
+
+/**
+ * 取绑定定义（不解析环境变量）。
+ * @param {string} bindingKey
+ */
+export function getBinding(bindingKey) {
+    return BINDING_INDEX.get(bindingKey) || null;
+}
+
+/** 列出全部绑定，可筛选 */
+export function listBindings(options = {}) {
+    let result = [...BINDINGS];
+    if (options.status) result = result.filter((b) => b.status === options.status);
+    if (options.provider) result = result.filter((b) => b.provider === options.provider);
+    return result;
+}
+
+/** 绑定是否存在 */
+export function hasBinding(bindingKey) {
+    return BINDING_INDEX.has(bindingKey);
+}
+
+/**
+ * 按回退链解析环境变量（先找主变量，再依次找回退变量）。
+ * @param {string} primary
+ * @param {string[]} [fallbacks]
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {{value: string|null, from: string|null}}
+ */
+function resolveEnv(primary, fallbacks = [], env = process.env) {
+    const chain = [primary, ...fallbacks].filter(Boolean);
+    for (const name of chain) {
+        const v = env[name];
+        if (typeof v === 'string' && v.trim() !== '') {
+            return { value: v.trim(), from: name };
+        }
+    }
+    return { value: null, from: null };
+}
+
+/**
+ * 解析绑定为**可执行的运行时配置**。
+ *
+ * 🔴 关键行为：解析失败时返回明确原因，**绝不回退到任何硬编码地址**。
+ *    宁可调用失败并暴露配置问题，也不允许数据被静默发往生产环境。
+ *
+ * @param {string} bindingKey
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {{ok: true, config: object} | {ok: false, reason: string, missing: string[], binding: object|null}}
+ */
+export function resolveBinding(bindingKey, env = process.env) {
+    const binding = getBinding(bindingKey);
+    if (!binding) {
+        return { ok: false, reason: `未登记的绑定：${bindingKey}`, missing: [], binding: null };
+    }
+
+    // internal：无需任何配置
+    if (binding.provider === 'internal') {
+        return {
+            ok: true,
+            config: { ...binding, resolved_at: new Date().toISOString() },
+        };
+    }
+
+    const missing = [];
+
+    const url = resolveEnv(
+        binding.base_url_env,
+        binding.base_url_fallback_envs ? [...binding.base_url_fallback_envs, ...GLOBAL_URL_FALLBACKS] : GLOBAL_URL_FALLBACKS,
+        env,
+    );
+    if (!url.value) {
+        missing.push(binding.base_url_env || 'DIFY_API_BASE_URL');
+    }
+
+    const key = resolveEnv(
+        binding.api_key_env,
+        binding.api_key_fallback_envs ? [...binding.api_key_fallback_envs, ...GLOBAL_KEY_FALLBACKS] : GLOBAL_KEY_FALLBACKS,
+        env,
+    );
+    if (!key.value) {
+        missing.push(binding.api_key_env || 'DIFY_API_KEY');
+    }
+
+    if (missing.length > 0) {
+        return {
+            ok: false,
+            reason:
+                `绑定 "${bindingKey}"（${binding.display_name}）缺少配置：${missing.join(', ')}。` +
+                `请在 .env 中补齐后重试 —— 本平台不会回退到任何硬编码地址。`,
+            missing,
+            binding,
+        };
+    }
+
+    return {
+        ok: true,
+        config: {
+            ...binding,
+            base_url: url.value,
+            api_key: key.value,
+            base_url_from: url.from,
+            api_key_from: key.from,
+            model: binding.extra_model_env ? resolveEnv(binding.extra_model_env, [], env).value : null,
+            resolved_at: new Date().toISOString(),
+        },
+    };
+}
+
+/** 仅判断是否已配置（不返回密钥，供健康检查/运维页安全展示） */
+export function checkBinding(bindingKey, env = process.env) {
+    const binding = getBinding(bindingKey);
+    if (!binding) return { binding_key: bindingKey, registered: false, ready: false };
+    if (binding.provider === 'internal') {
+        return { binding_key: bindingKey, registered: true, ready: true, provider: 'internal' };
+    }
+    const r = resolveBinding(bindingKey, env);
+    return {
+        binding_key: bindingKey,
+        registered: true,
+        ready: r.ok,
+        provider: binding.provider,
+        status: binding.status,
+        version: binding.version,
+        missing: r.ok ? [] : r.missing,
+    };
+}
+
+/**
+ * 全量配置体检 —— 供运维页与 selftest 使用。
+ * 返回每一个绑定的就绪状态，**不泄露密钥值**。
+ */
+export function checkAllBindings(env = process.env) {
+    const items = BINDINGS.map((b) => checkBinding(b.binding_key, env));
+    return {
+        total: items.length,
+        ready: items.filter((i) => i.ready).length,
+        not_ready: items.filter((i) => !i.ready).length,
+        pending: items.filter((i) => i.status === 'pending').length,
+        items,
+    };
+}

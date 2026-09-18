@@ -27,6 +27,9 @@ import dashboardRoutes, { ensureDashboardTables } from './dashboardRoutes.js'; /
 import businessDashboardRoutes, { businessDashboardStorageDir, ensureBusinessDashboardTable } from './businessDashboardRoutes.js'; // AI 发布看板（Dify 发布能力）
 import { maskName, maskAmount, maskPhone, maskBrandBrands, maskProductNamesByBrandDict } from './utils/maskingUtils.js'; // 敏感数据脱敏工具
 import { extractBrandsFromProducts } from './utils/aiUtils.js'; // 智能品牌提取工具
+// ── 平台重构 M1/M2：技能目录与 Provider 适配层（新增，存量代码零改动）──
+import catalogRoutesV1 from './routes/v1/catalogRoutes.js'; // /api/v1 场景与技能接口（文档 03 §4）
+import { v1ErrorHandler } from './modules/common/apiResponse.js'; // v1 标准响应/错误模型（文档 03 §2–§3）
 import { analyzeMaterialQuote } from './services/pricingAnalysisService.js';
 import { difyKnowledgeService } from './services/difyKnowledgeService.js';
 import XLSX from 'xlsx';
@@ -257,6 +260,14 @@ app.use('/api/dashboards', dashboardRoutes); // 业务看板聚合中心模块
 ensureDashboardTables().catch(err => console.error('[Dashboard DDL] 看板表初始化失败:', err.message));
 app.use('/api/business-dashboard', businessDashboardRoutes); // AI 发布看板（Dify 发布能力，publish 走内部令牌鉴权）
 ensureBusinessDashboardTable().catch(err => console.error('[BusinessDashboard DDL] 发布看板表初始化失败:', err.message));
+
+// ============================================================
+// ■ /api/v1 —— 场景与技能目录（平台重构 M1/M2 落地）
+//   文档 03 §4 场景与技能 API；挂载在全局鉴权之后，天然要求登录
+//   仅新增，不影响任何存量路由
+// ============================================================
+app.use('/api/v1', catalogRoutesV1);
+app.use('/api/v1', v1ErrorHandler()); // v1 专用错误翻译（文档 03 §3）
 
 // ============================================================
 // ■ 演示脱敏：品牌字典接口（前端展示层脱敏使用）
