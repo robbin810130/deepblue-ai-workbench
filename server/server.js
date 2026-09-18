@@ -29,6 +29,7 @@ import { maskName, maskAmount, maskPhone, maskBrandBrands, maskProductNamesByBra
 import { extractBrandsFromProducts } from './utils/aiUtils.js'; // 智能品牌提取工具
 // ── 平台重构 M1/M2：技能目录与 Provider 适配层（新增，存量代码零改动）──
 import catalogRoutesV1 from './routes/v1/catalogRoutes.js'; // /api/v1 场景与技能接口（文档 03 §4）
+import taskRoutesV1 from './routes/v1/taskRoutes.js'; // /api/v1 任务中心接口（文档 05 PRD）
 import { v1ErrorHandler } from './modules/common/apiResponse.js'; // v1 标准响应/错误模型（文档 03 §2–§3）
 import { analyzeMaterialQuote } from './services/pricingAnalysisService.js';
 import { difyKnowledgeService } from './services/difyKnowledgeService.js';
@@ -267,6 +268,7 @@ ensureBusinessDashboardTable().catch(err => console.error('[BusinessDashboard DD
 //   仅新增，不影响任何存量路由
 // ============================================================
 app.use('/api/v1', catalogRoutesV1);
+app.use('/api/v1', taskRoutesV1); // 任务中心（M3，PRD 05）
 app.use('/api/v1', v1ErrorHandler()); // v1 专用错误翻译（文档 03 §3）
 
 // ============================================================

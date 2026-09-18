@@ -25,6 +25,13 @@ import {
 import { healthCheck } from './providers/index.js';
 import { normalizeWorkflowResult } from './providers/normalizer.js';
 import { normalizeBaseUrl } from './providers/difyClient.js';
+import {
+    TASK_STATUSES,
+    STATUS_LABELS,
+    canTransition,
+    can as canAction,
+    nextStatuses,
+} from './tasks/states.js';
 
 const results = [];
 /** @param {string} name @param {boolean} ok @param {string} [note] */
@@ -119,6 +126,18 @@ check('归一化：失败状态透传', failed.status === 'failed');
 // ── 7. API Shape 冒烟 ────────────────────────────────────────
 const shape = toApiShape(getSkill('contract_review'));
 check('toApiShape 输出 snake_case 键', ['skill_key', 'name', 'scene', 'input_kind'].every((k) => k in shape));
+
+// ── 8. 任务状态机（M3，PRD §2–§3）────────────────────────────
+check('状态机：八态封闭枚举', TASK_STATUSES.length === 8 && Object.keys(STATUS_LABELS).length === 8);
+check('状态机：主链 draft→queued→running', canTransition('draft', 'queued') && canTransition('queued', 'running'));
+check('状态机：running→成功/失败/取消/待确认', ['succeeded', 'failed', 'cancelled', 'waiting_confirmation'].every((s) => canTransition('running', s)));
+check('状态机：待确认→确认(成功)/驳回(取消)', canTransition('waiting_confirmation', 'succeeded') && canTransition('waiting_confirmation', 'cancelled'));
+check('状态机：重试 failed/cancelled→queued（新 Run）', canTransition('failed', 'queued') && canTransition('cancelled', 'queued'));
+check('状态机：归档 succeeded→archived', canTransition('succeeded', 'archived'));
+check('状态机：非法迁移被拦（archived 不可复活/终态不可互跳）', !canTransition('archived', 'queued') && !canTransition('succeeded', 'failed') && !canTransition('draft', 'running'));
+check('状态机：草稿允许执行/编辑/删除', ['execute', 'edit', 'delete'].every((a) => canAction('draft', a)));
+check('状态机：待确认允许 confirm/reject', canAction('waiting_confirmation', 'confirm') && canAction('waiting_confirmation', 'reject'));
+check('状态机：nextStatuses(queued) = running+cancelled', nextStatuses('queued').sort().join(',') === 'cancelled,running');
 
 // ── 汇总 ─────────────────────────────────────────────────────
 const failedCount = results.filter((r) => !r.ok).length;
