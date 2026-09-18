@@ -42,7 +42,9 @@ export const STATUS_LABELS = Object.freeze({
 /** 各状态允许的操作（PRD §3「允许操作」列；操作名 = taskService 的方法名） */
 export const ALLOWED_ACTIONS = Object.freeze({
     draft: Object.freeze(['edit', 'delete', 'execute']),
-    queued: Object.freeze(['cancel']),
+    // queued 允许 execute：创建即提交（execute_now）的直通路径里任务直接落在 queued，
+    // 以及卡住的排队任务可被重新驱动（queued→running 本就是合法迁移）
+    queued: Object.freeze(['cancel', 'execute']),
     running: Object.freeze(['view_progress', 'cancel']),
     waiting_confirmation: Object.freeze(['confirm', 'reject', 'cancel']),
     succeeded: Object.freeze(['view', 'download', 'share', 'rerun', 'archive']),

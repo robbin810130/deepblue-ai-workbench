@@ -14,8 +14,9 @@ import type { SceneKey } from '../../../types/domain';
 
 /* ============================================================
    场景插画（统一 64×64 画布 / 扁平双色，用透明度做层次）
+   导出复用：场景总览页（/scenes）用同一套插画保持视觉一致。
    ============================================================ */
-function SceneArt({ scene }: { scene: SceneKey }) {
+export function SceneArt({ scene }: { scene: SceneKey }) {
   const common = { width: 68, height: 68, viewBox: '0 0 64 64', fill: 'none' } as const;
 
   switch (scene) {

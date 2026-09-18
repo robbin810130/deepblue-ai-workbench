@@ -17,6 +17,8 @@ import { getSkill } from '../catalog/index.js';
 import { runSkill, resolveBinding } from '../providers/index.js';
 import { newTraceId } from '../providers/difyClient.js';
 import { cancelRun } from '../providers/difyProvider.js';
+import { loadStagedBuffers, bindFilesToTask } from '../files/fileStore.js';
+import * as notify from '../notifications/notify.js';
 import {
     can as canAction,
     canTransition,
@@ -115,6 +117,21 @@ export async function createTask({ skill_key, title, inputs = {}, files = [], ex
         actor: actorOf(user),
     });
 
+    // 暂存文件绑定任务（追溯与权限判定用，PRD §7/§9）
+    if (files.length) {
+        await bindFilesToTask(files, task.id).catch(() => { /* 绑定失败不阻断创建 */ });
+    }
+    // PRD §8「被分配任务」→ 通知 + 待办
+    if (assigned_to && assigned_to !== user.id) {
+        notify.notify(assigned_to, {
+            type: 'task_assigned',
+            title: `${user.username || '有人'} 给你分配了任务：${task.title}`,
+            body: `任务编号 ${task.task_no}`,
+            taskId: task.id,
+            isTodo: true,
+        });
+    }
+
     if (execute_now) {
         return executeTask(task, user, { inputs, files });
     }
@@ -165,13 +182,15 @@ async function _driveRun(task, skill, { inputs, files, traceId, actor, awaitResu
 
     const exec = (async () => {
         try {
+            // 暂存文件水合：file_id → buffer（PRD §7 平台先存、执行时再取）
+            const hydratedFiles = await loadStagedBuffers(files);
             const output = await runSkill(
                 skill.skill_key,
                 {
                     task_id: current.id,
                     user: { id: String(actor?.id ?? actor?.username ?? 'system'), name: actor?.username || actor?.name },
                     inputs,
-                    files,
+                    files: hydratedFiles,
                     context: { trace_id: traceId },
                 },
             );
@@ -191,18 +210,33 @@ async function _driveRun(task, skill, { inputs, files, traceId, actor, awaitResu
                     summary: output.summary ?? null,
                     detail: { note: '技能要求人工确认后交付', run_id: run.id },
                 });
-                // ⚠️ PRD §8：此处应同时创建 TodoItem + 发通知（M4 通知层接入点）
+                // PRD §8「需要人工确认」→ 通知 + 待办（TodoItem 接入点：M4 以 is_todo 标记承接）
+                notify.notify([current.created_by, current.assigned_to], {
+                    type: 'task_need_confirm',
+                    title: `任务待确认：${current.title}`,
+                    body: output.summary || 'AI 已完成执行，请确认结果后交付',
+                    taskId: current.id,
+                    isTodo: true,
+                });
                 return current;
             }
 
             current = await store.getTaskById(current.id);
-            return transition(current, 'succeeded', {
+            const done = await transition(current, 'succeeded', {
                 runId: run.id,
                 actor,
                 result: output.data,
                 summary: output.summary ?? null,
                 detail: { run_id: run.id, duration_ms: output.metrics?.duration_ms ?? null },
             });
+            // PRD §8「任务完成」→ 通知
+            notify.notify([done.created_by, done.assigned_to], {
+                type: 'task_succeeded',
+                title: `任务完成：${done.title}`,
+                body: output.summary || '任务已成功完成',
+                taskId: done.id,
+            });
+            return done;
         } catch (e) {
             await store.finishRun(run.id, {
                 status: 'failed',
@@ -210,13 +244,21 @@ async function _driveRun(task, skill, { inputs, files, traceId, actor, awaitResu
             });
             current = await store.getTaskById(current.id);
             // running → failed（PRD §2 异常分支）
-            return transition(current, 'failed', {
+            const failed = await transition(current, 'failed', {
                 runId: run.id,
                 actor,
                 error_code: e.code || 'PROVIDER_ERROR',
                 error_message: e.message,
                 detail: { trace_id: e.trace_id || traceId, binding_key: e.binding_key ?? null },
             });
+            // PRD §8「任务失败」→ 通知
+            notify.notify([failed.created_by, failed.assigned_to], {
+                type: 'task_failed',
+                title: `任务失败：${failed.title}`,
+                body: e.message || '执行过程发生错误',
+                taskId: failed.id,
+            });
+            return failed;
         }
     })();
 

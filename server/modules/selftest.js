@@ -139,6 +139,28 @@ check('状态机：草稿允许执行/编辑/删除', ['execute', 'edit', 'delet
 check('状态机：待确认允许 confirm/reject', canAction('waiting_confirmation', 'confirm') && canAction('waiting_confirmation', 'reject'));
 check('状态机：nextStatuses(queued) = running+cancelled', nextStatuses('queued').sort().join(',') === 'cancelled,running');
 
+// ── 9. 文件签名 URL（M4，PRD §9）────────────────────────────
+import { signDownload, verifyDownload, DEFAULT_DOWNLOAD_TTL_MS } from './files/fileStore.js';
+{
+    const { url } = signDownload('artifact', 'a1b2c3', 60_000);
+    const q = Object.fromEntries(new URL(url, 'http://x').searchParams);
+    check('签名URL：合法签名通过校验', verifyDownload(q) === true);
+    check('签名URL：过期被拒', verifyDownload({ ...q, exp: String(Date.now() - 1) }) === false);
+    check('签名URL：篡改 id 被拒', verifyDownload({ ...q, id: 'hacked' }) === false);
+    check('签名URL：篡改 sig 被拒', verifyDownload({ ...q, sig: 'deadbeef'.repeat(8) }) === false);
+    check('签名URL：kind 混用被拒（staged≠artifact）', verifyDownload({ ...q, kind: 'staged' }) === false);
+    check('签名URL：默认 TTL = 10 分钟', DEFAULT_DOWNLOAD_TTL_MS === 600_000);
+}
+
+// ── 10. 权限评估器（M6 先行版）──────────────────────────────
+import { LEGACY_APP_MAP, evaluateSkillPermission } from './permissions/evaluator.js';
+{
+    const mappedCount = Object.keys(LEGACY_APP_MAP).length;
+    check('权限映射：36 旧应用映射非空', mappedCount >= 30, `映射 ${mappedCount} 个技能`);
+    const granted = await evaluateSkillPermission({ skill_key: 'contract_review' }, { id: 1, role: 'admin' });
+    check('权限判定：admin 直接放行', granted.status === 'granted', granted.reason);
+}
+
 // ── 汇总 ─────────────────────────────────────────────────────
 const failedCount = results.filter((r) => !r.ok).length;
 console.log(`\n========== 结果：${results.length - failedCount}/${results.length} 通过 ==========\n`);

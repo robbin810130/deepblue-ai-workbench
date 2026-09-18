@@ -12,17 +12,23 @@
  *   /dashboard      数据看板
  *   /admin/*        管理后台
  *
- * 进度：本轮已实现 /workbench；其余为占位，逐轮替换。
+ * 进度：/workbench、/scenes、/scenes/:key、/skills/:key、/tasks、/tasks/:id 已实现；
+ *      /knowledge、/dashboard、/admin 为占位，后续轮次替换。
  */
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from './AppShell';
 import { ComingSoon } from '../components/common/ComingSoon';
 import { WorkbenchPage } from '../features/workbench/WorkbenchPage';
+import { ScenesPage } from '../features/scenes/ScenesPage';
+import { SceneDetailPage } from '../features/scenes/SceneDetailPage';
+import { SkillUsePage } from '../features/skills/SkillUsePage';
+import { TasksPage } from '../features/tasks/TasksPage';
+import { TaskDetailPage } from '../features/tasks/TaskDetailPage';
 
 export function AppRoutes({ username }: { username: string }) {
   return (
     <Routes>
-      <Route element={<AppShell username={username} unreadCount={3} />}>
+      <Route element={<AppShell username={username} />}>
         <Route index element={<Navigate to="/workbench" replace />} />
 
         <Route
@@ -30,19 +36,13 @@ export function AppRoutes({ username }: { username: string }) {
           element={<WorkbenchPage username={username} />}
         />
 
-        <Route path="/scenes" element={<ComingSoon title="业务场景" />} />
-        <Route
-          path="/scenes/:sceneKey"
-          element={<ComingSoon title="场景详情" />}
-        />
+        <Route path="/scenes" element={<ScenesPage />} />
+        <Route path="/scenes/:sceneKey" element={<SceneDetailPage />} />
 
-        <Route
-          path="/skills/:skillKey"
-          element={<ComingSoon title="技能详情" hint="技能详情是「立即使用」页：动态表单 + 文件上传 + 开始执行。" />}
-        />
+        <Route path="/skills/:skillKey" element={<SkillUsePage />} />
 
-        <Route path="/tasks" element={<ComingSoon title="任务中心" />} />
-        <Route path="/tasks/:taskId" element={<ComingSoon title="任务详情" />} />
+        <Route path="/tasks" element={<TasksPage />} />
+        <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
 
         <Route
           path="/knowledge"

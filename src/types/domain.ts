@@ -49,14 +49,14 @@ export interface Skill {
    状态机八态，见 05_任务中心详细PRD
    ============================================================ */
 export type TaskStatus =
+  | 'draft' // 草稿
   | 'queued' // 排队中
-  | 'running' // 进行中
+  | 'running' // 执行中
   | 'waiting_confirmation' // 待确认
   | 'succeeded' // 已完成
   | 'failed' // 失败
   | 'cancelled' // 已取消
-  | 'expired' // 已过期
-  | 'partial'; // 部分成功
+  | 'archived'; // 已归档
 
 export interface Task {
   id: string;
@@ -97,13 +97,18 @@ export interface StatusMeta {
 }
 
 export const TASK_STATUS_META: Record<TaskStatus, StatusMeta> = {
+  draft: {
+    label: '草稿',
+    tone: 'text-ink-soft bg-surface-sunken',
+    dot: 'bg-ink-faint',
+  },
   queued: {
     label: '排队中',
     tone: 'text-ink-soft bg-surface-sunken',
     dot: 'bg-ink-faint',
   },
   running: {
-    label: '进行中',
+    label: '执行中',
     tone: 'text-primary-600 bg-primary-50',
     dot: 'bg-primary-500',
   },
@@ -127,14 +132,9 @@ export const TASK_STATUS_META: Record<TaskStatus, StatusMeta> = {
     tone: 'text-ink-soft bg-surface-sunken',
     dot: 'bg-ink-faint',
   },
-  expired: {
-    label: '已过期',
+  archived: {
+    label: '已归档',
     tone: 'text-ink-soft bg-surface-sunken',
     dot: 'bg-ink-faint',
-  },
-  partial: {
-    label: '部分成功',
-    tone: 'text-warning bg-warning-soft',
-    dot: 'bg-warning',
   },
 };

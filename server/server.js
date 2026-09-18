@@ -30,6 +30,8 @@ import { extractBrandsFromProducts } from './utils/aiUtils.js'; // 智能品牌�
 // ── 平台重构 M1/M2：技能目录与 Provider 适配层（新增，存量代码零改动）──
 import catalogRoutesV1 from './routes/v1/catalogRoutes.js'; // /api/v1 场景与技能接口（文档 03 §4）
 import taskRoutesV1 from './routes/v1/taskRoutes.js'; // /api/v1 任务中心接口（文档 05 PRD）
+import fileRoutesV1 from './routes/v1/fileRoutes.js'; // /api/v1 文件暂存与签名下载（M4，PRD §7/§9）
+import notificationRoutesV1 from './routes/v1/notificationRoutes.js'; // /api/v1 通知与待办（M4，PRD §8）
 import { v1ErrorHandler } from './modules/common/apiResponse.js'; // v1 标准响应/错误模型（文档 03 §2–§3）
 import { analyzeMaterialQuote } from './services/pricingAnalysisService.js';
 import { difyKnowledgeService } from './services/difyKnowledgeService.js';
@@ -173,8 +175,9 @@ const normalizeIp = (ip) => {
 const authenticateToken = async (req, res, next) => {
     // 诊改优化：放行 OPTIONS 预检请求及特定路径，解决直连 3001 时的跨域鉴权问题
     // 特别说明：/api/auth/logout-beacon 必须放行，因为 sendBeacon 无法携带 Authorization Header
-    if (req.method === 'OPTIONS' || req.path === '/api/auth/login' || req.path === '/api/auth/logout-beacon' || req.path === '/api/health' || req.path === '/api/business-dashboard/publish') {
+    if (req.method === 'OPTIONS' || req.path === '/api/auth/login' || req.path === '/api/auth/logout-beacon' || req.path === '/api/health' || req.path === '/api/business-dashboard/publish' || req.path === '/api/v1/files/download') {
         // /api/business-dashboard/publish 由路由内部 X-Internal-Token 鉴权（Dify 服务端调用，无平台 JWT）
+        // /api/v1/files/download 为短时签名 URL 下载（HMAC+有效期即凭证，PRD 05 §9），路由内部自行校验签名
         return next();
     }
 
@@ -269,6 +272,8 @@ ensureBusinessDashboardTable().catch(err => console.error('[BusinessDashboard DD
 // ============================================================
 app.use('/api/v1', catalogRoutesV1);
 app.use('/api/v1', taskRoutesV1); // 任务中心（M3，PRD 05）
+app.use('/api/v1', fileRoutesV1); // 文件暂存与签名下载（M4，PRD §7/§9）
+app.use('/api/v1', notificationRoutesV1); // 通知与待办（M4，PRD §8）
 app.use('/api/v1', v1ErrorHandler()); // v1 专用错误翻译（文档 03 §3）
 
 // ============================================================

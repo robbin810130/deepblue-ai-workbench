@@ -9,6 +9,7 @@
  */
 
 import express from 'express';
+import pool from '../../db.js';
 import * as store from '../../modules/tasks/taskStore.js';
 import * as service from '../../modules/tasks/taskService.js';
 import { sendOk, sendFail, asyncHandler, startTimer } from '../../modules/common/apiResponse.js';
@@ -94,6 +95,67 @@ function toListItem(t) {
         summary: t.summary,
     };
 }
+
+/**
+ * GET /api/v1/tasks/metrics —— 任务指标（PRD §11）
+ * 定义：完成率 = succeeded/已结束；失败率 = failed/已结束；
+ *      人工确认率 = 进入过 waiting_confirmation 的任务占比；平均耗时 = succeeded 的 completed-started。
+ * ⚠️ 必须注册在 /tasks/:id 之前，否则 "metrics" 会被当作任务 ID 捕获。
+ */
+router.get(
+    '/tasks/metrics',
+    asyncHandler(async (req, res) => {
+        const elapsed = startTimer();
+        const scoped = req.user.role === 'admin' ? '' : 'WHERE created_by = $1';
+        const params = req.user.role === 'admin' ? [] : [req.user.id];
+        const q = async (sql) => (await pool.query(sql, params)).rows[0] || {};
+
+        const totals = await q(`
+            SELECT COUNT(*)::int AS created,
+                   COUNT(*) FILTER (WHERE status = 'succeeded')::int AS succeeded,
+                   COUNT(*) FILTER (WHERE status = 'failed')::int AS failed,
+                   COUNT(*) FILTER (WHERE status = 'cancelled')::int AS cancelled,
+                   COUNT(*) FILTER (WHERE status IN ('queued','running'))::int AS in_flight,
+                   COUNT(*) FILTER (WHERE status = 'waiting_confirmation')::int AS waiting,
+                   COUNT(*) FILTER (WHERE status = 'draft')::int AS drafts,
+                   AVG(EXTRACT(EPOCH FROM (completed_at - started_at)))
+                       FILTER (WHERE status = 'succeeded' AND started_at IS NOT NULL AND completed_at IS NOT NULL) AS avg_success_seconds
+            FROM tasks ${scoped}
+        `);
+        const confirmRows = await pool.query(`
+            SELECT COUNT(DISTINCT e.task_id)::int AS n
+            FROM task_events e ${scoped ? 'JOIN tasks t ON t.id = e.task_id AND t.created_by = $1' : ''}
+            WHERE e.event_type = 'confirmation_requested'
+        `, params);
+        const byScene = (await pool.query(`
+            SELECT scene, COUNT(*)::int AS n FROM tasks ${scoped} GROUP BY scene ORDER BY n DESC
+        `, params)).rows;
+        const byDay = (await pool.query(`
+            SELECT to_char(date_trunc('day', created_at), 'YYYY-MM-DD') AS day, COUNT(*)::int AS n
+            FROM tasks ${scoped ? scoped.replace('WHERE', 'WHERE') + ' AND' : 'WHERE'} created_at > NOW() - INTERVAL '14 days'
+            GROUP BY 1 ORDER BY 1
+        `, params)).rows;
+
+        const ended = (totals.succeeded || 0) + (totals.failed || 0) + (totals.cancelled || 0);
+        return sendOk(res, {
+            created: totals.created || 0,
+            by_status: {
+                draft: totals.drafts || 0,
+                queued_running: totals.in_flight || 0,
+                waiting_confirmation: totals.waiting || 0,
+                succeeded: totals.succeeded || 0,
+                failed: totals.failed || 0,
+                cancelled: totals.cancelled || 0,
+            },
+            success_rate: ended ? Number(((totals.succeeded || 0) / ended).toFixed(4)) : null,
+            failure_rate: ended ? Number(((totals.failed || 0) / ended).toFixed(4)) : null,
+            confirmation_rate: totals.created ? Number(((confirmRows.rows[0]?.n || 0) / totals.created).toFixed(4)) : null,
+            avg_success_seconds: totals.avg_success_seconds ? Number(Number(totals.avg_success_seconds).toFixed(1)) : null,
+            by_scene: Object.fromEntries(byScene.map((r) => [r.scene, r.n])),
+            by_day: Object.fromEntries(byDay.map((r) => [r.day, r.n])),
+        }, { trace_id: req.trace_id, meta: { request_time_ms: elapsed() } });
+    }),
+);
 
 /** GET /api/v1/tasks/:id —— 详情（含 Run 记录、事件时间线、产物，PRD §5） */
 router.get(

@@ -8,17 +8,16 @@
  * 禁止：模型选择器、Token 展示（见 06 文档 §1.2 明确列为禁止内容）。
  */
 import { useEffect, useRef, useState } from 'react';
-import { Bell, ChevronDown, Search } from 'lucide-react';
+import { ChevronDown, Search } from 'lucide-react';
 import { cn } from '../../components/ui/cn';
+import { NotificationsBell } from '../notifications/NotificationsBell';
 
 interface TopbarProps {
   /** 当前登录用户展示名 */
   username: string;
-  /** 未读通知数（0 时铃铛不显示红点） */
-  unreadCount?: number;
 }
 
-export function Topbar({ username, unreadCount = 0 }: TopbarProps) {
+export function Topbar({ username }: TopbarProps) {
   const [keyword, setKeyword] = useState('');
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -66,18 +65,7 @@ export function Topbar({ username, unreadCount = 0 }: TopbarProps) {
 
       {/* 通知 + 用户菜单 */}
       <div className="flex shrink-0 items-center gap-2">
-        <button
-          type="button"
-          aria-label={
-            unreadCount > 0 ? `通知，${unreadCount} 条未读` : '通知，无未读'
-          }
-          className="relative flex h-9 w-9 items-center justify-center rounded-[10px] text-ink-soft transition-colors hover:bg-page hover:text-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-200"
-        >
-          <Bell size={19} strokeWidth={1.8} />
-          {unreadCount > 0 && (
-            <span className="absolute right-[9px] top-[9px] h-2 w-2 rounded-full bg-danger ring-2 ring-surface" />
-          )}
-        </button>
+        <NotificationsBell />
 
         <div className="mx-1 h-5 w-px bg-line" />
 

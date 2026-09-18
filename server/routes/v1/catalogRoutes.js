@@ -30,6 +30,7 @@ import {
 } from '../../modules/catalog/index.js';
 import { sendOk, sendFail, asyncHandler, startTimer, resolveTraceId } from '../../modules/common/apiResponse.js';
 import { AppError } from '../../modules/common/errors.js';
+import { evaluateSkillPermission } from '../../modules/permissions/evaluator.js';
 
 const router = express.Router();
 
@@ -38,13 +39,6 @@ router.use((req, _res, next) => {
     req.trace_id = resolveTraceId(req);
     next();
 });
-
-/** 统一的权限状态占位（见文件头说明） */
-const PERMISSION_STATUS = {
-    permission_status: 'not_evaluated',
-    permission_status_reason:
-        '权限判定将在技能表接管权限语义后启用（当前仍以 appId 数组为授权依据）',
-};
 
 // ─────────────────────────────────────────────────────────────
 // 场景
@@ -122,9 +116,12 @@ router.get(
                 trace_id: req.trace_id,
             });
         }
+        // M6 先行版：基于旧版 sys_roles.permissions（appId 数组）真实判定；
+        // 无映射/数据不可读时诚实返回 not_evaluated（见 permissions/evaluator.js）
+        const permission = await evaluateSkillPermission(skill, req.user);
         return sendOk(
             res,
-            { ...toApiShape(skill), ...PERMISSION_STATUS },
+            { ...toApiShape(skill), permission_status: permission.status, permission_status_reason: permission.reason },
             { trace_id: req.trace_id, meta: { request_time_ms: elapsed() } },
         );
     }),

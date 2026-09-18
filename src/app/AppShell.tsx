@@ -16,16 +16,15 @@ import { Topbar } from '../components/layout/Topbar';
 
 interface AppShellProps {
   username: string;
-  unreadCount?: number;
 }
 
-export function AppShell({ username, unreadCount = 0 }: AppShellProps) {
+export function AppShell({ username }: AppShellProps) {
   return (
     <div className="dw-root flex h-screen w-full overflow-hidden bg-page">
       <Sidebar />
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <Topbar username={username} unreadCount={unreadCount} />
+        <Topbar username={username} />
 
         <main className="dw-scroll flex-1 overflow-y-auto">
           <div className="mx-auto w-full max-w-[1440px] px-6 py-5">

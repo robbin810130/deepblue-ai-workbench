@@ -90,3 +90,35 @@ node server/modules/selftest.js
 - 任务中心（tasks 模块）：任务八态状态机 + prepare → create → execute 链路
 - 文件暂存层：平台先存自身对象存储再上传 Dify（文档 04 §7）
 - M6 权限模型：permission_code + 数据范围，替换 `not_evaluated` 占位
+
+---
+
+## M3 任务中心（server/modules/tasks/）
+
+- **states.js** 八态状态机唯一权威：draft → queued → running → waiting_confirmation → succeeded → archived，异常分支 failed/cancelled；迁移走一张表，业务代码禁止散落字符串比较。
+- **taskStore.js** 四表自建 DDL：`tasks / task_runs / task_events / task_artifacts`（启动时 `ensureTasksTables()`，无需迁移工具）；任务编号 `AI-YYYYMMDD-XXXXXX`。
+- **taskService.js** 编排：execute / cancel / confirm / reject / retry / rerun / archive；重试新建 run_no+1 不覆盖旧 Run；async 技能后台执行（HTTP 立即返回）、blocking 同步等待；越权 403。
+
+接口（12 端点）：`GET /api/v1/tasks`（状态/场景筛选 + q 搜索）、`GET /api/v1/tasks/:id`（含事件时间线 + Run 记录）、`POST /api/v1/tasks`（execute_now 直通 queued）、`POST .../{execute,cancel,confirm,reject,retry,rerun,archive}`、`PATCH/DELETE`（草稿）、`GET /api/v1/tasks/metrics`（PRD §11 指标）。
+
+---
+
+## M4 文件暂存 + 通知 + 权限先行版
+
+- **files/fileStore.js**：上传暂存（multer → `TASK_STORAGE_DIR`，默认 `<repo>/server/storage/tasks`）→ `staged_files` 表登记；执行时 `loadStagedBuffers()` 水合进 Provider；产物落 `task_artifacts` + 磁盘。**签名下载**：`GET /api/v1/files/download?kind&id&exp&sig`（HMAC-SHA256 + 10 分钟有效期，PRD §9），挂在 JWT 白名单里（签名即凭证）；`assertCanAccessFile` 做归属校验（创建人/被分配人/admin）。
+- **notifications/notify.js**：`task_notifications` 表；PRD §8 四类事件（完成/失败/待确认+待办/被分配+待办）在 taskService 挂钩；接口 `GET /api/v1/notifications`、`unread-count`、`/:id/read`、`read-all`、`/:id/complete-todo`。
+- **permissions/evaluator.js**（M6 先行版）：`LEGACY_APP_MAP` 把 34 个技能映射回旧版权限模型 `sys_roles.permissions`（appId 数组，`*` 全量）；admin 直接放行；无映射/读取失败诚实返回 `not_evaluated`，不假装判定。
+
+## 自检与验证（更新）
+
+```bash
+node server/modules/selftest.js   # 42 项断言：注册表/归一化/状态机/签名URL/权限映射
+```
+
+真实 HTTP 冒烟（内嵌 PostgreSQL 18 @ 127.0.0.1:5599，20 项全过）：上传 → 签发 URL → 无 JWT 签名下载 → 篡改 403 → 带文件任务创建即执行 → BINDING_INCOMPLETE 失败+事件流 → 失败通知+未读 → 重试新 Run（旧 Run 保留）→ 确认 → 归档 → 驳回原因必填 → 取消 → rerun 克隆 → 越权 403 → 指标端点 → admin 权限 granted。
+
+## 下一步
+
+- M6 正式权限模型：permission_code + 数据范围，替换 LEGACY_APP_MAP 映射
+- 5 个幽灵技能的 WorkflowBinding 补齐与开放流程
+- 存量化技能（34 应用旧路由）迁移到任务中心链路
