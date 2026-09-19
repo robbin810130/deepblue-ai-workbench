@@ -157,5 +157,41 @@ export const difyKnowledgeService = {
         }
 
         return await res.json();
+    },
+
+    /**
+     * 知识检索（召回原文片段，用于知识库「知识问答」的来源引用）
+     *
+     * 用 dataset API key 调用官方 retrieve 端点，不产生生成式回答，
+     * 因此**不需要**额外的问答类应用凭据 —— 任何配好知识库 key 的环境都能用。
+     */
+    async retrieve(query, datasetId, topK = 4) {
+        const url = `${getBaseUrl()}/datasets/${getDatasetId(datasetId)}/retrieve`;
+        const res = await fetch(url, {
+            method: 'POST',
+            headers: { ...getHeaders(), 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                query,
+                retrieval_model: {
+                    search_method: 'semantic_search',
+                    reranking_enable: false,
+                    top_k: topK,
+                    score_threshold_enabled: false
+                }
+            })
+        });
+
+        if (!res.ok) {
+            const errText = await res.text();
+            throw new Error(`Dify retrieve error: ${res.status} ${errText}`);
+        }
+
+        const json = await res.json();
+        const records = Array.isArray(json?.records) ? json.records : [];
+        return records.map((r) => ({
+            document_name: r?.segment?.document?.name || r?.segment?.document_name || '未命名文档',
+            segment: r?.segment?.content || '',
+            score: typeof r?.score === 'number' ? r.score : null
+        }));
     }
 };

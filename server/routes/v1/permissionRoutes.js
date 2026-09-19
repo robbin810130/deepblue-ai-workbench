@@ -53,6 +53,24 @@ router.get(
     }),
 );
 
+// ── 权限码清单（角色管理页的勾选项）──────────────────────────
+// 权限码取自各技能的 legacy.app_id —— 与 sys_roles.permissions 存量语汇完全一致，
+// 保证「新技能级授权」与「旧角色 appId 授权」两套模型对得上。
+router.get(
+    '/permissions/codes',
+    asyncHandler(async (req, res) => {
+        const map = new Map();
+        for (const s of listSkills({})) {
+            const code = s.legacy?.app_id;
+            if (code) map.set(code, s.name);
+        }
+        const list = [...map.entries()]
+            .map(([code, name]) => ({ code, name }))
+            .sort((a, b) => a.code.localeCompare(b.code));
+        return sendOk(res, list, { trace_id: req.trace_id, meta: { total: list.length } });
+    }),
+);
+
 // ── 角色 × 技能授权视图 ──────────────────────────────────────
 
 router.get(

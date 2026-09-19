@@ -31,6 +31,107 @@ router.get('/users', async (req, res) => {
     }
 });
 
+// 数据集清单 —— 前端「知识空间」按场景标识展示（不暴露 Dify UUID）
+// 与 services/difyKnowledgeService.js 的 getDatasetId 映射保持一一对应。
+const DATASET_CATALOG = [
+    {
+        dataset_key: 'company_rules',
+        name: '公司制度与规范',
+        description: '规章制度、流程文件；供公司制度助手与合同审核条款比对引用'
+    },
+    {
+        dataset_key: 'tender_knowledge',
+        name: '招投标知识库',
+        description: '招投标政策、标书范本与历史项目资料'
+    }
+];
+
+router.get('/datasets', async (req, res) => {
+    let rows = [];
+    try {
+        const result = await pool.query(
+            `SELECT dataset_id, COUNT(*)::int AS document_count
+             FROM sys_knowledge_documents GROUP BY dataset_id`
+        );
+        rows = result.rows;
+    } catch (error) {
+        // 表不可读时不炸接口，退化为「0 文档」清单，前端仍可上传
+        console.warn('[KnowledgeAdmin] datasets count degraded:', error.message);
+    }
+    const counts = new Map(rows.map((r) => [r.dataset_id, r.document_count]));
+    const list = DATASET_CATALOG.map((d) => ({
+        ...d,
+        document_count: counts.get(d.dataset_key) || 0
+    }));
+    // 库中存在但清单未登记的数据集也暴露，避免「有数据却看不见」
+    for (const r of rows) {
+        if (!DATASET_CATALOG.some((d) => d.dataset_key === r.dataset_id)) {
+            list.push({
+                dataset_key: r.dataset_id,
+                name: r.dataset_id,
+                description: '未登记数据集（来自存量数据）',
+                document_count: r.document_count
+            });
+        }
+    }
+    res.json({ code: 0, data: list });
+});
+
+// 知识问答 —— 检索召回原文片段 + （可用时）生成式回答
+//
+// 设计：**检索**只用 dataset API key（任何环境都能跑）；**生成**复用平台唯一 AI 出口
+// providers.runSkill，绑定不可用时优雅降级为「仅返回检索片段」，绝不整页失败。
+router.post('/qa', async (req, res) => {
+    const { question, dataset_key, top_k } = req.body || {};
+    const q = String(question || '').trim();
+    if (!q) return res.status(400).json({ code: 400, message: 'question 不能为空' });
+    const datasetKey = dataset_key || 'company_rules';
+
+    let references = [];
+    let retrieveFailed = null;
+    try {
+        references = await difyKnowledgeService.retrieve(q, datasetKey, Number(top_k) || 4);
+    } catch (error) {
+        retrieveFailed = error.message;
+    }
+
+    let answer = null;
+    let note;
+    try {
+        const { runSkill } = await import('./modules/providers/index.js');
+        const result = await runSkill('rules_assistant', {
+            inputs: {
+                message: q,
+                references: references.map((r) => r.segment).join('\n\n---\n\n')
+            },
+            user: { id: req.user?.id, name: req.user?.username }
+        });
+        const text = result?.data?.answer || result?.data?.message || result?.summary || null;
+        if (typeof text === 'string' && text.trim()) answer = text;
+    } catch (error) {
+        note = `检索问答模型不可用（${error.code || 'PROVIDER_ERROR'}）：以下为知识库原文片段。`;
+    }
+
+    if (!answer && !note) {
+        note = references.length
+            ? '未生成综合回答，以下为知识库原文片段。'
+            : '未检索到相关内容。';
+    }
+    if (retrieveFailed) {
+        note = `知识库检索未成功：${retrieveFailed}`;
+    }
+
+    res.json({
+        code: 0,
+        data: {
+            answer,
+            answer_available: Boolean(answer),
+            references,
+            note
+        }
+    });
+});
+
 // 1. 获取文档列表 (安全隔离)
 router.get('/list', async (req, res) => {
     try {
