@@ -5,6 +5,7 @@
 import fs from 'fs';
 import { authenticateToken } from '../infra/auth.js';
 import pool from '../db.js';
+import * as legacyBridge from '../modules/tasks/legacyBridge.js'; // XO 专项C：外部执行型跟踪
 
 export function segProductSelection1(app, __ctx) {
 app.post('/api/product-selection/upload', authenticateToken, __ctx.upload.single('file'), async (req, res) => {
@@ -51,6 +52,7 @@ app.post('/api/product-selection/upload', authenticateToken, __ctx.upload.single
 
 // 选品策略 - 发送对话消息（SSE 流式返回）
 app.post('/api/product-selection/chat', authenticateToken, async (req, res) => {
+    let trackedTask = null; // XO 专项C：跟踪任务句柄（try 外声明，catch 也可用）
     try {
         const { conversation_id, message, files: uploadFiles } = req.body;
         const userId = req.user?.id;
@@ -120,6 +122,16 @@ app.post('/api/product-selection/chat', authenticateToken, async (req, res) => {
 
         console.log(`[选品策略] 开始调用 Dify (streaming), 会话ID: ${convId}`);
 
+        // ── XO 专项C：每轮对话建跟踪任务（观测面；Dify 流式调用保持原样）──
+        if (legacyBridge.isPilotSkill('product_selection')) {
+            trackedTask = await legacyBridge.startTrackedSession({
+                skillKey: 'product_selection',
+                title: `选品策略·${(message || '文件分析').slice(0, 20)}`,
+                user: req.user,
+                inputs: { conversation_id: convId, message: (message || '').slice(0, 500), has_files: !!(uploadFiles && uploadFiles.length) },
+            });
+        }
+
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 130000);
 
@@ -143,6 +155,7 @@ app.post('/api/product-selection/chat', authenticateToken, async (req, res) => {
             for await (const chunk of difyRes.body) { errChunks.push(Buffer.from(chunk)); }
             const errText = Buffer.concat(errChunks).toString('utf-8');
             console.error(`[选品策略 Dify 报错] ${difyRes.status}: ${errText.substring(0, 500)}`);
+            if (trackedTask) await legacyBridge.failTrackedSession(trackedTask.taskId, { code: 'DIFY_HTTP_ERROR', message: `Dify 调用失败 (${difyRes.status})` });
             return res.status(difyRes.status).json({ success: false, message: `Dify 调用失败 (${difyRes.status})` });
         }
 
@@ -206,6 +219,7 @@ app.post('/api/product-selection/chat', authenticateToken, async (req, res) => {
                                 [convId, fullAnswer]
                             );
                             assistantSaved = true;
+                            if (trackedTask) await legacyBridge.completeTrackedSession(trackedTask.taskId, { result: fullAnswer, summary: `${fullAnswer.length} 字回复` });
                             res.write(`data: ${JSON.stringify({ event: 'complete', answer: fullAnswer, conversation_id: convId })}\n\n`);
                         } else if (eventData.event === 'error') {
                             res.write(`data: ${JSON.stringify({ event: 'error', message: eventData.message || 'Dify 错误' })}\n\n`);
@@ -217,6 +231,10 @@ app.post('/api/product-selection/chat', authenticateToken, async (req, res) => {
             }
         } finally {
             clearTimeout(idleTimer);
+            // ── XO 专项C：流中断（用户停止/超时）→ 跟踪任务失败收口（幂等）──
+            if (trackedTask && !assistantSaved) {
+                await legacyBridge.failTrackedSession(trackedTask.taskId, { code: 'SESSION_ABORTED', message: fullAnswer.length > 0 ? '流式中断（部分内容已保存）' : '流式中断（无内容）' });
+            }
             // 流中断时（用户手动停止等），保存已收集的内容并标记 stopped
             if (!assistantSaved && fullAnswer.length > 0) {
                 try {
@@ -247,6 +265,7 @@ app.post('/api/product-selection/chat', authenticateToken, async (req, res) => {
     } catch (error) {
         const msg = error.name === 'AbortError' ? 'Dify 调用超时' : error.message || '选品策略服务内部错误';
         console.error(`[选品策略 Error] ${msg}`);
+        if (trackedTask) await legacyBridge.failTrackedSession(trackedTask.taskId, { code: error.name === 'AbortError' ? 'PROVIDER_TIMEOUT' : 'FLOW_ERROR', message: msg });
         if (!res.headersSent) {
             res.status(500).json({ success: false, message: msg });
         } else {

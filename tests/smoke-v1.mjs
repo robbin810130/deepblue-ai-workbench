@@ -594,6 +594,45 @@ async function main() {
                 `http=${res.status} task=${t[0]?.task_no || '无'} run_binding=${runs[0]?.binding_key}`);
         }
 
+        // 57. XO 专项B/C 外部执行型跟踪：start→progress×2→complete 全链 + 失败收口
+        {
+            const { startTrackedSession, reportSessionProgress, completeTrackedSession, failTrackedSession } = await import('../server/modules/tasks/legacyBridge.js');
+            const t = await startTrackedSession({
+                skillKey: 'product_entry', title: '冒烟·外部跟踪全链',
+                user: { id: 9002, username: 'smoke_alice', role: 'user' },
+                inputs: { file_name: 'smoke.xlsx' },
+            });
+            await reportSessionProgress(t.taskId, '步骤1：Sheet 解析', { workflow_run_id: 'wr-smoke' });
+            await reportSessionProgress(t.taskId, '步骤2：SKU 解析');
+            await completeTrackedSession(t.taskId, { result: 'ok', summary: '2 步完成' });
+            const t2 = await startTrackedSession({
+                skillKey: 'product_entry', title: '冒烟·外部跟踪失败',
+                user: { id: 9002, username: 'smoke_alice', role: 'user' },
+            });
+            await failTrackedSession(t2.taskId, { code: 'USER_CANCELLED', message: '手动停止' });
+            const { rows: r1 } = await pool.query(`SELECT status, result, summary FROM tasks WHERE id=$1`, [t.taskId]);
+            const { rows: ev } = await pool.query(`SELECT count(*)::int AS n FROM task_events WHERE task_id=$1 AND event_type='progress_updated'`, [t.taskId]);
+            const { rows: r2 } = await pool.query(`SELECT status, error_code FROM tasks WHERE id=$1`, [t2.taskId]);
+            check('57. 外部执行型跟踪（start→progress×2→complete + fail 收口）',
+                r1[0]?.status === 'succeeded' && r1[0]?.result === 'ok' && ev[0]?.n === 2
+                && r2[0]?.status === 'failed' && r2[0]?.error_code === 'USER_CANCELLED',
+                `全链=${r1[0]?.status} 事件=${ev[0]?.n} 失败=${r2[0]?.status}/${r2[0]?.error_code}`);
+        }
+
+        // 58. XO 专项C 路由级：product-selection/chat（Dify 地址无效 → 外层 catch 失败收口）
+        {
+            const res = await fetch(`${BASE}/api/product-selection/chat`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${ALICE_TOKEN}`, 'content-type': 'application/json' },
+                body: JSON.stringify({ message: '冒烟选品' }),
+            });
+            const { rows: t } = await pool.query(
+                `SELECT status, error_code FROM tasks WHERE skill_key='product_selection' ORDER BY created_at DESC LIMIT 1`);
+            check('58. product_selection 路由级跟踪（任务建出+异常失败收口）',
+                res.status === 500 && t[0]?.status === 'failed',
+                `http=${res.status} task=${t[0]?.status}/${t[0]?.error_code}`);
+        }
+
     await pool.end();
 
     // ── 汇总 ─────────────────────────────────────────────────

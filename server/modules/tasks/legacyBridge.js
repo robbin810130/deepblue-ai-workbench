@@ -26,6 +26,10 @@ import {
     createTask,
     confirmTask,
     getTaskDetail,
+    startTrackedTask,
+    reportTaskProgress,
+    completeTrackedTask,
+    failTrackedTask,
 } from './taskService.js';
 import { getSkill } from '../catalog/index.js';
 import { evaluateSkillPermission } from '../permissions/evaluator.js';
@@ -173,4 +177,50 @@ export function stripThinkTags(text) {
         .replace(/<think>[\s\S]*?<\/think>(\\n|\s)*/gi, '')
         .trim()
         .replace(/\\n/g, '\n');
+}
+
+// ─────────────────────────────────────────────────────────────
+// 外部执行型跟踪桥（XO 专项B/C，2026-09-19）
+// 适用：product_entry（Dify human-in-loop 多步流程）/ product_selection（流式会话）
+// 等执行体在路由内的技能——任务中心做观测面，Dify 调用保持原样。
+// 全部 best-effort：跟踪动作失败只告警，绝不影响主流程响应。
+// ─────────────────────────────────────────────────────────────
+
+/** 静默兜底包装（跟踪永远不能炸主流程） */
+async function trackedSafe(fn, label) {
+    try {
+        return await fn();
+    } catch (e) {
+        console.warn(`[任务跟踪] ${label} 失败（忽略）: ${e.message}`);
+        return null;
+    }
+}
+
+/** 开启跟踪任务 → { taskId, taskNo }（失败返回 null，主流程继续） */
+export function startTrackedSession({ skillKey, title, user, inputs = {} }) {
+    return trackedSafe(
+        async () => {
+            const task = await startTrackedTask({ skill_key: skillKey, title, user, inputs });
+            return { taskId: task.id, taskNo: task.task_no };
+        },
+        `start(${skillKey})`,
+    );
+}
+
+/** 上报进度（message 摘要 + detail 明细） */
+export function reportSessionProgress(taskId, message, detail = null) {
+    if (!taskId) return Promise.resolve(null);
+    return trackedSafe(() => reportTaskProgress(taskId, { message, detail }), `progress(${taskId})`);
+}
+
+/** 成功收口 */
+export function completeTrackedSession(taskId, { result = null, summary = null } = {}) {
+    if (!taskId) return Promise.resolve(null);
+    return trackedSafe(() => completeTrackedTask(taskId, { result, summary }), `complete(${taskId})`);
+}
+
+/** 失败收口 */
+export function failTrackedSession(taskId, { code = 'PROVIDER_ERROR', message } = {}) {
+    if (!taskId) return Promise.resolve(null);
+    return trackedSafe(() => failTrackedTask(taskId, { code, message }), `fail(${taskId})`);
 }

@@ -26,6 +26,7 @@ import {
 } from './states.js';
 import * as store from './taskStore.js';
 import pool from '../../db.js';
+import { evaluateSkillPermission } from '../permissions/evaluator.js';
 
 /** 事件里的操作者描述 */
 function actorOf(user) {
@@ -492,4 +493,77 @@ export async function getTaskDetail(task, user) {
         store.listArtifacts(task.id),
     ]);
     return { task, runs, events, artifacts };
+}
+
+// ─────────────────────────────────────────────────────────────
+// 外部执行型跟踪（XO 专项B/C，2026-09-19）
+//
+// 适用：执行体为路由内交互式中继的技能（Dify human-in-loop 多步流程 /
+// 流式会话）—— 平台侧没有可整体托管的单次执行体，强行塞进 _driveRun
+// 会扭曲状态机。任务中心在这里承担「观测面」：建任务 → 进度事件 → 终态。
+// 状态机路径与普通任务完全一致（draft→queued→running→终态），
+// 进度以 TaskEvent(progress_updated) 记录，不创建 TaskRun（无平台侧执行体）。
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * 开启一个外部执行型跟踪任务（draft→queued→running）。
+ * @returns 落到 running 的任务行（含 id/task_no）
+ */
+export async function startTrackedTask({ skill_key, title, user, inputs = {} }) {
+    const skill = getSkill(skill_key);
+    if (!skill || skill.live === false) {
+        const err = new Error(`技能不可用：${skill_key}`);
+        err.code = 'RESOURCE_NOT_FOUND';
+        err.http_status = 404;
+        throw err;
+    }
+    if (skill.binding_key === 'internal') {
+        const err = new Error(`技能「${skill.name}」为平台内部功能，不经任务中心`);
+        err.code = 'VALIDATION_FAILED';
+        err.http_status = 422;
+        throw err;
+    }
+    // 权限先行（与 runThroughTaskCenter 同口径）
+    const perm = await evaluateSkillPermission(skill, user);
+    if (perm.status === 'denied') {
+        const err = new Error(`无权使用技能「${skill.name}」：${perm.reason}`);
+        err.code = 'FORBIDDEN';
+        err.http_status = 403;
+        throw err;
+    }
+    let task = await createTask({ skill_key, title, inputs, execute_now: false, user });
+    task = await transition(task, 'queued', { actor: user });
+    task = await transition(task, 'running', {
+        actor: user,
+        detail: { note: '外部执行型跟踪：执行体为路由内 Dify 交互中继' },
+    });
+    return task;
+}
+
+/** 上报进度（running 态追加 TaskEvent，不改状态） */
+export async function reportTaskProgress(taskId, { message = null, percent = null, detail = null, actor = 'system' } = {}) {
+    const fresh = await store.getTaskById(taskId);
+    if (!fresh || fresh.status !== 'running') return null;
+    await store.appendEvent(fresh.id, {
+        event_type: 'progress_updated',
+        from_status: fresh.status,
+        to_status: fresh.status,
+        actor: actorOf(actor),
+        detail: { message, percent, ...(detail || {}) },
+    });
+    return fresh;
+}
+
+/** 外部会话成功收口（running → succeeded，结果/摘要落任务） */
+export async function completeTrackedTask(taskId, { result = null, summary = null, actor = 'system' } = {}) {
+    const fresh = await store.getTaskById(taskId);
+    if (!fresh || fresh.status !== 'running') return fresh;
+    return transition(fresh, 'succeeded', { actor, result, summary, detail: { note: '外部执行型：会话跟踪完成' } });
+}
+
+/** 外部会话失败收口（running → failed，错误码/消息落任务） */
+export async function failTrackedTask(taskId, { code = 'PROVIDER_ERROR', message, actor = 'system' } = {}) {
+    const fresh = await store.getTaskById(taskId);
+    if (!fresh || fresh.status !== 'running') return fresh;
+    return transition(fresh, 'failed', { actor, error_code: code, error_message: message, detail: { note: '外部执行型：会话跟踪失败' } });
 }

@@ -4,8 +4,25 @@
  */
 import fs from 'fs';
 import { authenticateToken } from '../infra/auth.js';
+import * as legacyBridge from '../modules/tasks/legacyBridge.js'; // XO 专项B：外部执行型跟踪
 import { logAudit } from '../infra/audit.js';
 import pool from '../db.js';
+
+// ── XO 专项B：外部执行型跟踪（任务中心观测面；Dify 交互保持原样）──────
+// fileId → { taskId, taskNo }；trackedByRun: workflowRunId → fileId（补全阶段反查）
+const tracked = new Map();
+const trackedByRun = new Map();
+const trackOn = () => legacyBridge.isPilotSkill('product_entry');
+/** 跟踪任务收口（幂等：仅 running 可迁移） */
+async function trackFinish(key, fn) {
+    if (!trackOn()) return;
+    const t = tracked.get(key);
+    if (!t) return;
+    await fn(t.taskId);
+    tracked.delete(key);
+}
+const trackFail = (key, code, message) => trackFinish(key, (id) => legacyBridge.failTrackedSession(id, { code, message }));
+const trackDone = (key, result, summary) => trackFinish(key, (id) => legacyBridge.completeTrackedSession(id, { result, summary }));
 
 export function segProductEntry1(app, __ctx) {
 app.post('/api/product-entry/upload', authenticateToken, __ctx.upload.single('file'), async (req, res) => {
@@ -48,7 +65,17 @@ app.post('/api/product-entry/upload', authenticateToken, __ctx.upload.single('fi
 
         try {
             const data = JSON.parse(resText);
-            res.json({ success: true, file_id: data.id });
+            // ── XO 专项B：流程起点建跟踪任务 ──
+            if (trackOn()) {
+                const t = await legacyBridge.startTrackedSession({
+                    skillKey: 'product_entry',
+                    title: `商品库录入·${__ctx.fixUploadedFileName(req.file.originalname)}`,
+                    user: req.user,
+                    inputs: { file_name: req.file.originalname, dify_file_id: data.id },
+                });
+                if (t) tracked.set(data.id, t);
+            }
+            res.json({ success: true, file_id: data.id, task_no: tracked.get(data.id)?.taskNo || null });
         } catch (parseError) {
             throw new Error(`无法解析 Dify 响应为 JSON。收到的原始文本(部分): ${resText.substring(0, 200)}`);
         }
@@ -237,9 +264,16 @@ app.post('/api/product-entry/sheets', authenticateToken, async (req, res) => {
         // 清理解析进度
         if (fileId) __ctx.workflowProgress.delete(`parse_${fileId}`);
 
+        // ── XO 专项B：进度上报 + workflowRunId 反查登记 ──
+        if (trackOn() && tracked.get(fileId)) {
+            trackedByRun.set(workflowRunId, fileId);
+            await legacyBridge.reportSessionProgress(tracked.get(fileId).taskId, `Sheet 解析完成（${sheets.length} 个 Sheet）`, { workflow_run_id: workflowRunId });
+        }
         res.json({ success: true, sheets, brands, suppliers, formToken, workflowRunId, taskId, fileId, fileName });
     } catch (e) {
         console.error('[商品库录入获取Sheet列表失败]', e);
+        if (trackOn() && fileId && tracked.get(fileId)) await trackFail(fileId, 'FLOW_ERROR', e?.message || '流程失败');
+        if (trackOn() && fileId && tracked.get(fileId)) trackedByRun.delete(workflowRunId);
         res.status(500).json({ success: false, message: e.message });
     }
 });
@@ -669,6 +703,10 @@ app.post('/api/product-entry/confirm-sheet', authenticateToken, async (req, res)
 
             // 清理进度
             if (workflowRunId) __ctx.workflowProgress.delete(`sheet_${workflowRunId}`);
+            // ── XO 专项B：Sheet 确认进度上报 ──
+            if (trackOn() && tracked.get(fileId)) {
+                await legacyBridge.reportSessionProgress(tracked.get(fileId).taskId, 'Sheet 已确认，工作流续跑完成', { workflow_run_id: workflowRunId });
+            }
             res.json({ success: true, data: markdownText, skuList, fileId, fileName });
         } catch (parseError) {
             console.error('[商品库录入] 结果解析失败', parseError);
@@ -676,6 +714,8 @@ app.post('/api/product-entry/confirm-sheet', authenticateToken, async (req, res)
         }
     } catch (e) {
         console.error('[商品库录入确认Sheet失败]', e);
+        if (trackOn() && fileId && tracked.get(fileId)) await trackFail(fileId, 'FLOW_ERROR', e?.message || '流程失败');
+        if (trackOn() && fileId && tracked.get(fileId)) trackedByRun.delete(workflowRunId);
         res.status(500).json({ success: false, message: e.message });
     }
 });
@@ -773,6 +813,10 @@ app.post('/api/product-entry/parse', authenticateToken, async (req, res) => {
                 markdownText = rawOutputs;
             }
 
+            // ── XO 专项B：SKU 解析进度上报 ──
+            if (trackOn() && tracked.get(fileIds?.[0])) {
+                await legacyBridge.reportSessionProgress(tracked.get(fileIds[0]).taskId, `SKU 解析完成（${(skuList || []).length} 条）`);
+            }
             res.json({ success: true, data: markdownText, skuList, fileIds, fileNames });
         } catch (parseError) {
             console.error('[商品库录入] Dify 响应解析失败', parseError);
@@ -780,6 +824,7 @@ app.post('/api/product-entry/parse', authenticateToken, async (req, res) => {
         }
     } catch (e) {
         console.error('[商品库录入解析失败]', e);
+        if (trackOn() && fileIds?.[0] && tracked.get(fileIds?.[0])) await trackFail(fileIds?.[0], 'FLOW_ERROR', e?.message || '流程失败');
         res.status(500).json({ success: false, message: e.message });
     }
 })
@@ -1210,6 +1255,9 @@ app.post('/api/product-entry/confirm', authenticateToken, async (req, res) => {
                 [(fileNames || []).join(', '), parseResult || '', confirmResult, skuCount, spuCount, 'confirmed', userName]
             );
 
+            // ── XO 专项B：录入流程成功收口 ──
+            await trackDone((fileIds || [])[0], confirmResult, `SKU ${skuCount} / SPU ${spuCount}`);
+
             res.json({ success: true, data: confirmResult });
             return;
         }
@@ -1283,9 +1331,13 @@ app.post('/api/product-entry/confirm', authenticateToken, async (req, res) => {
             [(fileNames || []).join(', '), parseResult || '', confirmResult, skuCount, spuCount, 'confirmed', userName]
         );
 
+        // ── XO 专项B：录入流程成功收口 ──
+        await trackDone((fileIds || [])[0], confirmResult, `SKU ${skuCount} / SPU ${spuCount}`);
+
         res.json({ success: true, data: confirmResult });
     } catch (e) {
         console.error('[商品库录入确认失败]', e);
+        if (trackOn() && fileIds?.[0] && tracked.get(fileIds?.[0])) await trackFail(fileIds?.[0], 'FLOW_ERROR', e?.message || '流程失败');
         res.status(500).json({ success: false, message: e.message });
     }
 });
@@ -1572,9 +1624,15 @@ app.post('/api/product-entry/confirm-completion', authenticateToken, async (req,
             [(fileNames || []).join(', ') || '', '', confirmResult, completionList?.length || 0, 0, 'confirmed', userName]
         );
 
+        // ── XO 专项B：补全流程成功收口 ──
+        await trackDone(trackedByRun.get(workflowRunId), confirmResult, `补全 ${completionList?.length || 0} 条`);
+        trackedByRun.delete(workflowRunId);
+
         res.json({ success: true, data: confirmResult });
     } catch (e) {
         console.error('[商品库录入确认补全信息失败]', e);
+        if (trackOn() && trackedByRun.get(workflowRunId) && tracked.get(trackedByRun.get(workflowRunId))) await trackFail(trackedByRun.get(workflowRunId), 'FLOW_ERROR', e?.message || '流程失败');
+        if (trackOn() && trackedByRun.get(workflowRunId) && tracked.get(trackedByRun.get(workflowRunId))) trackedByRun.delete(workflowRunId);
         res.status(500).json({ success: false, message: e.message });
     }
 });
@@ -1615,6 +1673,11 @@ app.post('/api/product-entry/stop-workflow', authenticateToken, async (req, res)
         const resText = await stopRes.text();
 
         if (stopRes.ok) {
+            // ── XO 专项B：用户中止 → 跟踪任务失败收口 ──
+            if (trackOn() && trackedByRun.get(workflowRunId)) {
+                await trackFail(trackedByRun.get(workflowRunId), 'USER_CANCELLED', '用户手动停止工作流');
+                trackedByRun.delete(workflowRunId);
+            }
             res.json({ success: true });
         } else {
             console.warn(`[商品库录入] 停止工作流失败 (${stopRes.status}): ${resText.substring(0, 300)}`);
