@@ -19,6 +19,7 @@ import hazardDetectionRoutes from './hazardDetectionRoutes.js'; // 隐患检测�
 import knowledgeAdminRoutes from './knowledgeAdminRoutes.js'; // 知识库管理路由
 import keyAccountRoutes from './keyAccountRoutes.js'; // 大客户档案模块路由
 import bidAssistantRoutes from './bidAssistantRoutes.js'; // 投标助手模块路由
+import * as legacyBridge from './modules/tasks/legacyBridge.js'; // D4 试点：存量路由 → 任务中心迁移桥
 import reviewPartnerRoutes from './reviewPartnerRoutes.js'; // 复盘搭子模块路由
 import productLibraryRoutes from './productLibraryRoutes.js'; // 选品库模块路由
 import logisticsConfigRoutes from './logisticsConfigRoutes.js'; // 物流费计算配置路由
@@ -2628,6 +2629,133 @@ app.post('/api/invoice-verify/upload', authenticateToken, upload.single('file'),
 });
 
 // 2. 发票校验 - 触发 Dify 工作流
+/**
+ * 发票校验结果解析 + 落历史 + 响应（D4 试点迁移抽出）。
+ * 旧直连路径与任务中心试点路径共用：输入统一为 Dify 阻塞响应形 bodyData。
+ */
+async function respondInvoiceBody(req, res, bodyData, { pdfNames, xlsxNames }) {
+        // bodyData 由参数传入
+        let finalReport = '';
+        const rawOutputs = bodyData?.data?.outputs || bodyData?.data || bodyData;
+
+        // 提取原始文本
+        let rawText = '';
+        if (rawOutputs && typeof rawOutputs === 'object' && Object.keys(rawOutputs).length > 0) {
+            if (rawOutputs.text !== undefined) {
+                rawText = typeof rawOutputs.text === 'object' ? JSON.stringify(rawOutputs.text) : String(rawOutputs.text);
+            } else if (rawOutputs.result !== undefined) {
+                rawText = typeof rawOutputs.result === 'object' ? JSON.stringify(rawOutputs.result) : String(rawOutputs.result);
+            } else if (rawOutputs.output !== undefined) {
+                rawText = typeof rawOutputs.output === 'object' ? JSON.stringify(rawOutputs.output) : String(rawOutputs.output);
+            } else {
+                const firstKeyVal = Object.values(rawOutputs)[0];
+                rawText = typeof firstKeyVal === 'object' ? JSON.stringify(firstKeyVal, null, 2) : String(firstKeyVal);
+            }
+        } else {
+            finalReport = "【警示】未截获有效输出。通讯帧：\n```json\n" + JSON.stringify(bodyData, null, 2) + "\n```";
+        }
+
+        // 尝试解析为结构化发票校验结果
+        // 辅助函数：解析加法表达式（如 "2+4" → 6, "124.00+248.00" → 372, 支持负数）
+        const parseAdditionVal = (val) => {
+            const str = String(val ?? '0').trim();
+            if (!str) return 0;
+            // 用正则提取所有数字（含负号），如 "-3+4" → ["-3", "4"]
+            const nums = str.match(/-?\d+(?:\.\d+)?/g);
+            if (!nums || nums.length === 0) return 0;
+            return nums.reduce((sum, n) => sum + parseFloat(n), 0);
+        };
+        let isVerifySuccess = false; // 标记校验是否成功
+        let extractedSupplierName = ''; // 供应商名称
+        if (rawText && !finalReport) {
+            try {
+                const parsed = JSON.parse(rawText);
+                if (parsed && (parsed.matched || parsed.unmatched)) {
+                    isVerifySuccess = true; // 校验成功
+                    const total = parsed.total_invoice_items || ((parsed.matched?.length || 0) + (parsed.unmatched?.length || 0));
+                    const matchedCount = parsed.matched?.length || 0;
+                    const unmatchedCount = parsed.unmatched?.length || 0;
+                    const isValid = parsed.is_valid !== false;
+
+                    // 构建摘要
+                    const totalInvoiceItems = parsed.total_invoice_items || 0;
+                    const totalReconciliationItems = parsed.total_reconciliation_items || 0;
+                    const supplierName = parsed.supplier_name || parsed.vendor_name || '';
+                    extractedSupplierName = supplierName; // 保存到外层作用域
+                    finalReport = `## ${isValid ? '✅ 校验通过' : '⚠️ 校验存在差异'}\n\n`;
+                    finalReport += `> 对账完成，匹配 ${matchedCount} 项，未匹配 ${unmatchedCount} 项（发票文件 ${totalInvoiceItems} 项，对账表格 ${totalReconciliationItems} 项${supplierName ? '，供应商：' + supplierName : ''}）\n\n`;
+
+                    // 未匹配项（优先展示）
+                    if (parsed.unmatched && parsed.unmatched.length > 0) {
+                        finalReport += `### ❌ 未匹配项（${unmatchedCount} 项）\n\n`;
+                        finalReport += `| 发票商品 | 对账商品 | 发票数量 | 对账数量 | 发票金额 | 对账金额 | 发票税率 | 预期税率 | 原因 |\n`;
+                        finalReport += `|----------|----------|----------|----------|----------|----------|----------|----------|------|\n`;
+                        let sumInvoiceQty = 0, sumReconciliationQty = 0, sumInvoiceAmount = 0, sumReconciliationAmount = 0;
+                        parsed.unmatched.forEach(item => {
+                            sumInvoiceQty += parseAdditionVal(item.invoice_quantity);
+                            sumReconciliationQty += parseAdditionVal(item.reconciliation_quantity);
+                            sumInvoiceAmount += parseAdditionVal(item.invoice_amount);
+                            sumReconciliationAmount += parseAdditionVal(item.reconciliation_amount);
+                        });
+                        finalReport += `| **汇总** | - | **${sumInvoiceQty}** | **${sumReconciliationQty}** | **${sumInvoiceAmount.toFixed(2)}** | **${sumReconciliationAmount.toFixed(2)}** | - | - | - |\n`;
+                        parsed.unmatched.forEach(item => {
+                            finalReport += `| ${item.invoice_name || '-'} | ${item.reconciliation_name || '-'} | ${item.invoice_quantity || '-'} | ${item.reconciliation_quantity || '-'} | ${item.invoice_amount || '-'} | ${item.reconciliation_amount || '-'} | ${item.invoice_tax_rate || '-'} | ${item.expected_tax_rate || '-'} | ${item.reason || '-'} |\n`;
+                        });
+                        finalReport += '\n';
+                    }
+
+                    // 匹配项
+                    if (parsed.matched && parsed.matched.length > 0) {
+                        finalReport += `### ✅ 已匹配项（${matchedCount} 项）\n\n`;
+                        finalReport += `| 发票商品 | 对账商品 | 发票数量 | 对账数量 | 发票金额 | 对账金额 | 发票税率 | 预期税率 |\n`;
+                        finalReport += `|----------|----------|----------|----------|----------|----------|----------|----------|\n`;
+                        let sumInvoiceQty2 = 0, sumReconciliationQty2 = 0, sumInvoiceAmount2 = 0, sumReconciliationAmount2 = 0;
+                        parsed.matched.forEach(item => {
+                            sumInvoiceQty2 += parseAdditionVal(item.invoice_quantity);
+                            sumReconciliationQty2 += parseAdditionVal(item.reconciliation_quantity);
+                            sumInvoiceAmount2 += parseAdditionVal(item.invoice_amount);
+                            sumReconciliationAmount2 += parseAdditionVal(item.reconciliation_amount);
+                        });
+                        finalReport += `| **汇总** | - | **${sumInvoiceQty2}** | **${sumReconciliationQty2}** | **${sumInvoiceAmount2.toFixed(2)}** | **${sumReconciliationAmount2.toFixed(2)}** | - | - |\n`;
+                        parsed.matched.forEach(item => {
+                            finalReport += `| ${item.invoice_name || '-'} | ${item.reconciliation_name || '-'} | ${item.invoice_quantity || '-'} | ${item.reconciliation_quantity || '-'} | ${item.invoice_amount || '-'} | ${item.reconciliation_amount || '-'} | ${item.invoice_tax_rate || '-'} | ${item.expected_tax_rate || '-'} |\n`;
+                        });
+                    }
+                } else {
+                    // 不是发票校验结构，原样返回
+                    finalReport = rawText;
+                }
+            } catch (jsonErr) {
+                // 不是 JSON，原样返回
+                finalReport = rawText;
+            }
+        }
+
+        if (finalReport === 'undefined' || (!finalReport && rawText)) {
+            finalReport = rawText || "【未定义输出】原始回传报文：\n```json\n" + JSON.stringify(rawOutputs, null, 2) + "\n```";
+        }
+
+        // 过滤  标签
+        if (typeof finalReport === 'string') {
+            finalReport = finalReport.replace(/<think>[\s\S]*?<\/think>(\\n|\s)*/gi, '').trim();
+            finalReport = finalReport.replace(/\\n/g, '\n');
+        }
+
+        // 只有校验成功才保存历史记录
+        let newRecordId = null;
+        if (isVerifySuccess) {
+            const pdfNameStr = (pdfNames || []).join(', ');
+            const xlsxNameStr = (xlsxNames || []).join(', ');
+            const insertResult = await pool.query(
+                `INSERT INTO invoice_verify_history (pdf_name, xlsx_name, result_text, supplier_name, username) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+                [pdfNameStr, xlsxNameStr, finalReport, extractedSupplierName, req.user?.username || 'web_os_user']
+            );
+            newRecordId = insertResult.rows[0]?.id || null;
+        }
+
+        res.json({ success: true, data: finalReport, isVerifySuccess, historyId: newRecordId });
+}
+
 app.post('/api/invoice-verify/run', authenticateToken, async (req, res) => {
     try {
         const { pdfIds, xlsxIds, pdfNames, xlsxNames } = req.body;
@@ -2635,6 +2763,26 @@ app.post('/api/invoice-verify/run', authenticateToken, async (req, res) => {
 
         if (!pdfIds || pdfIds.length === 0 || !xlsxIds || xlsxIds.length === 0) {
             return res.status(400).json({ success: false, message: '必须提供 PDF 和 XLSX 文件ID' });
+        }
+
+        // ── D4 试点迁移（TASK_CENTER_PILOT 含 invoice_verify 时启用）──────────
+        // 建任务 → 执行 → 通知闭环；成功后用归一化输出构造与 Dify 阻塞响应同形的
+        // bodyData，复用既有解析/落库/响应逻辑 —— 行为零变化。未启用时走下方旧直连路径。
+        if (legacyBridge.isPilotSkill('invoice_verify')) {
+            const r = await legacyBridge.runThroughTaskCenter({
+                skillKey: 'invoice_verify',
+                title: `发票校验：${(pdfNames || []).join('、') || '发票PDF'} × ${(xlsxNames || []).join('、') || '对账单'}`,
+                user: req.user,
+                inputs: {
+                    invoice_files: pdfIds.map((id) => ({ type: 'document', transfer_method: 'local_file', upload_file_id: id })),
+                    statement_files: xlsxIds.map((id) => ({ type: 'document', transfer_method: 'local_file', upload_file_id: id })),
+                },
+            });
+            if (!r.ok) {
+                console.error(`[发票校验-任务中心] ${r.taskNo} 失败 ${r.errorCode}: ${r.message}`);
+                return res.status(500).json({ success: false, message: `任务执行失败（${r.taskNo}）：${r.message}` });
+            }
+            return await respondInvoiceBody(req, res, { data: { outputs: r.outputs ?? {} } }, { pdfNames, xlsxNames });
         }
 
         const apiKey = process.env.DIFY_INVOICE_VERIFY_API_KEY;
@@ -2706,125 +2854,7 @@ app.post('/api/invoice-verify/run', authenticateToken, async (req, res) => {
 
         try {
             const bodyData = JSON.parse(resText);
-            let finalReport = '';
-            const rawOutputs = bodyData?.data?.outputs || bodyData?.data || bodyData;
-
-            // 提取原始文本
-            let rawText = '';
-            if (rawOutputs && typeof rawOutputs === 'object' && Object.keys(rawOutputs).length > 0) {
-                if (rawOutputs.text !== undefined) {
-                    rawText = typeof rawOutputs.text === 'object' ? JSON.stringify(rawOutputs.text) : String(rawOutputs.text);
-                } else if (rawOutputs.result !== undefined) {
-                    rawText = typeof rawOutputs.result === 'object' ? JSON.stringify(rawOutputs.result) : String(rawOutputs.result);
-                } else if (rawOutputs.output !== undefined) {
-                    rawText = typeof rawOutputs.output === 'object' ? JSON.stringify(rawOutputs.output) : String(rawOutputs.output);
-                } else {
-                    const firstKeyVal = Object.values(rawOutputs)[0];
-                    rawText = typeof firstKeyVal === 'object' ? JSON.stringify(firstKeyVal, null, 2) : String(firstKeyVal);
-                }
-            } else {
-                finalReport = "【警示】未截获有效输出。通讯帧：\n```json\n" + JSON.stringify(bodyData, null, 2) + "\n```";
-            }
-
-            // 尝试解析为结构化发票校验结果
-            // 辅助函数：解析加法表达式（如 "2+4" → 6, "124.00+248.00" → 372, 支持负数）
-            const parseAdditionVal = (val) => {
-                const str = String(val ?? '0').trim();
-                if (!str) return 0;
-                // 用正则提取所有数字（含负号），如 "-3+4" → ["-3", "4"]
-                const nums = str.match(/-?\d+(?:\.\d+)?/g);
-                if (!nums || nums.length === 0) return 0;
-                return nums.reduce((sum, n) => sum + parseFloat(n), 0);
-            };
-            let isVerifySuccess = false; // 标记校验是否成功
-            let extractedSupplierName = ''; // 供应商名称
-            if (rawText && !finalReport) {
-                try {
-                    const parsed = JSON.parse(rawText);
-                    if (parsed && (parsed.matched || parsed.unmatched)) {
-                        isVerifySuccess = true; // 校验成功
-                        const total = parsed.total_invoice_items || ((parsed.matched?.length || 0) + (parsed.unmatched?.length || 0));
-                        const matchedCount = parsed.matched?.length || 0;
-                        const unmatchedCount = parsed.unmatched?.length || 0;
-                        const isValid = parsed.is_valid !== false;
-
-                        // 构建摘要
-                        const totalInvoiceItems = parsed.total_invoice_items || 0;
-                        const totalReconciliationItems = parsed.total_reconciliation_items || 0;
-                        const supplierName = parsed.supplier_name || parsed.vendor_name || '';
-                        extractedSupplierName = supplierName; // 保存到外层作用域
-                        finalReport = `## ${isValid ? '✅ 校验通过' : '⚠️ 校验存在差异'}\n\n`;
-                        finalReport += `> 对账完成，匹配 ${matchedCount} 项，未匹配 ${unmatchedCount} 项（发票文件 ${totalInvoiceItems} 项，对账表格 ${totalReconciliationItems} 项${supplierName ? '，供应商：' + supplierName : ''}）\n\n`;
-
-                        // 未匹配项（优先展示）
-                        if (parsed.unmatched && parsed.unmatched.length > 0) {
-                            finalReport += `### ❌ 未匹配项（${unmatchedCount} 项）\n\n`;
-                            finalReport += `| 发票商品 | 对账商品 | 发票数量 | 对账数量 | 发票金额 | 对账金额 | 发票税率 | 预期税率 | 原因 |\n`;
-                            finalReport += `|----------|----------|----------|----------|----------|----------|----------|----------|------|\n`;
-                            let sumInvoiceQty = 0, sumReconciliationQty = 0, sumInvoiceAmount = 0, sumReconciliationAmount = 0;
-                            parsed.unmatched.forEach(item => {
-                                sumInvoiceQty += parseAdditionVal(item.invoice_quantity);
-                                sumReconciliationQty += parseAdditionVal(item.reconciliation_quantity);
-                                sumInvoiceAmount += parseAdditionVal(item.invoice_amount);
-                                sumReconciliationAmount += parseAdditionVal(item.reconciliation_amount);
-                            });
-                            finalReport += `| **汇总** | - | **${sumInvoiceQty}** | **${sumReconciliationQty}** | **${sumInvoiceAmount.toFixed(2)}** | **${sumReconciliationAmount.toFixed(2)}** | - | - | - |\n`;
-                            parsed.unmatched.forEach(item => {
-                                finalReport += `| ${item.invoice_name || '-'} | ${item.reconciliation_name || '-'} | ${item.invoice_quantity || '-'} | ${item.reconciliation_quantity || '-'} | ${item.invoice_amount || '-'} | ${item.reconciliation_amount || '-'} | ${item.invoice_tax_rate || '-'} | ${item.expected_tax_rate || '-'} | ${item.reason || '-'} |\n`;
-                            });
-                            finalReport += '\n';
-                        }
-
-                        // 匹配项
-                        if (parsed.matched && parsed.matched.length > 0) {
-                            finalReport += `### ✅ 已匹配项（${matchedCount} 项）\n\n`;
-                            finalReport += `| 发票商品 | 对账商品 | 发票数量 | 对账数量 | 发票金额 | 对账金额 | 发票税率 | 预期税率 |\n`;
-                            finalReport += `|----------|----------|----------|----------|----------|----------|----------|----------|\n`;
-                            let sumInvoiceQty2 = 0, sumReconciliationQty2 = 0, sumInvoiceAmount2 = 0, sumReconciliationAmount2 = 0;
-                            parsed.matched.forEach(item => {
-                                sumInvoiceQty2 += parseAdditionVal(item.invoice_quantity);
-                                sumReconciliationQty2 += parseAdditionVal(item.reconciliation_quantity);
-                                sumInvoiceAmount2 += parseAdditionVal(item.invoice_amount);
-                                sumReconciliationAmount2 += parseAdditionVal(item.reconciliation_amount);
-                            });
-                            finalReport += `| **汇总** | - | **${sumInvoiceQty2}** | **${sumReconciliationQty2}** | **${sumInvoiceAmount2.toFixed(2)}** | **${sumReconciliationAmount2.toFixed(2)}** | - | - |\n`;
-                            parsed.matched.forEach(item => {
-                                finalReport += `| ${item.invoice_name || '-'} | ${item.reconciliation_name || '-'} | ${item.invoice_quantity || '-'} | ${item.reconciliation_quantity || '-'} | ${item.invoice_amount || '-'} | ${item.reconciliation_amount || '-'} | ${item.invoice_tax_rate || '-'} | ${item.expected_tax_rate || '-'} |\n`;
-                            });
-                        }
-                    } else {
-                        // 不是发票校验结构，原样返回
-                        finalReport = rawText;
-                    }
-                } catch (jsonErr) {
-                    // 不是 JSON，原样返回
-                    finalReport = rawText;
-                }
-            }
-
-            if (finalReport === 'undefined' || (!finalReport && rawText)) {
-                finalReport = rawText || "【未定义输出】原始回传报文：\n```json\n" + JSON.stringify(rawOutputs, null, 2) + "\n```";
-            }
-
-            // 过滤  标签
-            if (typeof finalReport === 'string') {
-                finalReport = finalReport.replace(/<think>[\s\S]*?<\/think>(\\n|\s)*/gi, '').trim();
-                finalReport = finalReport.replace(/\\n/g, '\n');
-            }
-
-            // 只有校验成功才保存历史记录
-            let newRecordId = null;
-            if (isVerifySuccess) {
-                const pdfNameStr = (pdfNames || []).join(', ');
-                const xlsxNameStr = (xlsxNames || []).join(', ');
-                const insertResult = await pool.query(
-                    `INSERT INTO invoice_verify_history (pdf_name, xlsx_name, result_text, supplier_name, username) VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-                    [pdfNameStr, xlsxNameStr, finalReport, extractedSupplierName, req.user?.username || 'web_os_user']
-                );
-                newRecordId = insertResult.rows[0]?.id || null;
-            }
-
-            res.json({ success: true, data: finalReport, isVerifySuccess, historyId: newRecordId });
+            return await respondInvoiceBody(req, res, bodyData, { pdfNames, xlsxNames });
         } catch (parseErr) {
             console.error('[发票校验 JSON解析失败]', parseErr.message);
             console.error('[发票校验] resText 前 500 字符:', resText.substring(0, 500));
@@ -9023,6 +9053,23 @@ app.post('/api/quote-verify/run', authenticateToken, async (req, res) => {
             return res.status(400).json({ success: false, message: '请输入供应商名称' });
         }
         logAudit(req, { module: 'QUOTE_VERIFY', action: 'RUN_VERIFY', details: { supplierName } });
+
+        // ── D4 试点迁移（TASK_CENTER_PILOT 含 quote_verify 时启用）──────────
+        // 建任务 → 执行 → 通知闭环 → 归一化输出映射回旧响应形状；未启用走旧直连。
+        if (legacyBridge.isPilotSkill('quote_verify')) {
+            const r = await legacyBridge.runThroughTaskCenter({
+                skillKey: 'quote_verify',
+                title: `核查报价：${supplierName.trim()}`,
+                user: req.user,
+                inputs: { supplier_name: supplierName.trim() },
+            });
+            if (!r.ok) {
+                console.error(`[核查报价A-任务中心] ${r.taskNo} 失败 ${r.errorCode}: ${r.message}`);
+                return res.status(500).json({ success: false, message: `任务执行失败（${r.taskNo}）：${r.message}` });
+            }
+            const text = legacyBridge.stripThinkTags(legacyBridge.extractAnswerText(r.outputs ?? {}));
+            return res.json({ success: true, data: text || '未获取到有效结果' });
+        }
 
         const apiKey = process.env.DIFY_QUOTE_VERIFY_API_KEY;
         const apiUrl = process.env.DIFY_QUOTE_VERIFY_API_URL;

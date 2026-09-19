@@ -305,6 +305,57 @@ async function main() {
             `${json?.data?.length} 条`);
     }
 
+    // ── D4 试点：存量路由 → 任务中心迁移桥（server 需带 TASK_CENTER_PILOT 启动）──
+    {
+        // 试点开：invoice_verify 走任务中心 —— 绑定 env 未配置 → BINDING_INCOMPLETE
+        // 失败链路；但任务/事件/通知全部落库（这就是闭环证明）。
+        const res = await fetch(`${BASE}/api/invoice-verify/run`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${ALICE_TOKEN}`, 'content-type': 'application/json' },
+            body: JSON.stringify({ pdfIds: ['smoke-dify-file-1'], xlsxIds: ['smoke-dify-file-2'] }),
+        });
+        const body = await res.json().catch(() => ({}));
+        check('31. 试点路由走任务中心（失败也建任务+通知）',
+            res.status === 500 && /任务执行失败/.test(body?.message || ''),
+            `http=${res.status} ${(body?.message || '').slice(0, 40)}`);
+        const { rows: pilotTasks } = await pool.query(
+            `SELECT id, status FROM tasks WHERE skill_key='invoice_verify' ORDER BY created_at DESC LIMIT 1`,
+        );
+        const t = pilotTasks[0];
+        check('32. 试点任务落库且终态 failed',
+            t && t.status === 'failed', t ? t.status : '无任务');
+        const { rows: pilotEvents } = await pool.query(
+            `SELECT event_type, detail FROM task_events WHERE task_id=$1 ORDER BY created_at`,
+            [t?.id],
+        );
+        check('33. 试点任务事件链含 task_failed（带绑定信息）',
+            pilotEvents.some((e) => e.event_type === 'task_failed' && /invoice_verify/.test(JSON.stringify(e.detail || {}))),
+            `${pilotEvents.length} 条事件`);
+        const { rows: pilotNotify } = await pool.query(
+            `SELECT type, read_at FROM task_notifications WHERE task_id=$1`,
+            [t?.id],
+        );
+        check('34. 试点失败产生未读通知（task_failed）',
+            pilotNotify.some((n) => n.type === 'task_failed' && n.read_at === null),
+            `${pilotNotify.length} 条通知`);
+    }
+    {
+        // 开关关闭验证：quote_verify 不在 TASK_CENTER_PILOT 里（server 只开了 invoice_verify）
+        // → 走旧直连路径，报「服务端未配置」且【不】建任务。
+        const before = await pool.query(`SELECT count(*)::int AS n FROM tasks WHERE skill_key='quote_verify'`);
+        const res = await fetch(`${BASE}/api/quote-verify/run`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${ALICE_TOKEN}`, 'content-type': 'application/json' },
+            body: JSON.stringify({ supplierName: '冒烟供应商' }),
+        });
+        const body = await res.json().catch(() => ({}));
+        const after = await pool.query(`SELECT count(*)::int AS n FROM tasks WHERE skill_key='quote_verify'`);
+        check('35. 开关未列技能走旧路径且不建任务',
+            res.status === 500 && /未配置/.test(body?.message || '')
+                && after.rows[0].n === before.rows[0].n,
+            `http=${res.status} 任务数 ${before.rows[0].n}→${after.rows[0].n}`);
+    }
+
     await pool.end();
 
     // ── 汇总 ─────────────────────────────────────────────────
