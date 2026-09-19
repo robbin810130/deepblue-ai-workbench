@@ -2,7 +2,7 @@
  * 后端场景 key（snake_case）→ 插画/旧 mock 场景 key 映射
  * 后端权威枚举见 server/modules/catalog/scenes.js
  */
-import type { SceneKey } from '../../types/domain';
+import type { SceneKey } from '../types/domain';
 
 export function sceneArtKey(sceneKey: string): SceneKey {
   switch (sceneKey) {
