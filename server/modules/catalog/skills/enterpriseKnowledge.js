@@ -145,7 +145,7 @@ export const enterpriseKnowledgeSkills = [
         artifact_kind: 'markdown',
         permission: { code: 'skill:meeting_minutes:run', data_scope: 'dept' },
         task: { trackable: true, idempotent: false },
-        live: false,
+        live: true,
         legacy: {
             app_id: null,
             routes: ['/api/meeting-minutes/*'],
@@ -183,7 +183,7 @@ export const enterpriseKnowledgeSkills = [
         artifact_kind: 'markdown',
         permission: { code: 'skill:digital_employee:run', data_scope: 'dept' },
         task: { trackable: true, idempotent: false },
-        live: false,
+        live: true,
         legacy: {
             app_id: null,
             routes: ['/api/digital-employee/*'],
@@ -221,7 +221,7 @@ export const enterpriseKnowledgeSkills = [
         artifact_kind: 'markdown',
         permission: { code: 'skill:doc_drafting:run', data_scope: 'dept' },
         task: { trackable: true, idempotent: false },
-        live: false,
+        live: true,
         legacy: {
             app_id: null,
             routes: ['/api/doc-drafting/*'],
@@ -268,7 +268,7 @@ export const enterpriseKnowledgeSkills = [
         artifact_kind: 'markdown',
         permission: { code: 'skill:rules_assistant:run', data_scope: 'all' },
         task: { trackable: true, idempotent: false },
-        live: false,
+        live: true,
         legacy: {
             app_id: null,
             routes: ['/api/company-rules/*'],

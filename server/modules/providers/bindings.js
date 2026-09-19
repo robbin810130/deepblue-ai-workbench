@@ -350,7 +350,7 @@ export const BINDINGS = Object.freeze([
         version: '1.0',
         timeout_ms: 180000,
         status: 'active',
-        note: '👻 对应技能 live=false（缺前端入口）；另有本地定价分析服务 pricingAnalysisService 参与计算',
+        note: '👻 技能已于 2026-09-19 开门（live: true）（缺前端入口）；另有本地定价分析服务 pricingAnalysisService 参与计算',
     },
     {
         binding_key: 'logistics_fee',
@@ -503,11 +503,11 @@ export const BINDINGS = Object.freeze([
         display_name: '会议纪要',
         base_url_env: 'DIFY_MEETING_MINUTES_API_URL',
         api_key_env: 'DIFY_MEETING_MINUTES_API_KEY',
-        endpoint_kind: 'workflow',
+        endpoint_kind: 'chat', // 旧执行体 /api/meeting-minutes/summarize 是 {inputs,query,response_mode:blocking} 且读 data.answer，2026-09-19 修正 workflow→chat
         version: '1.0',
         timeout_ms: 900000,
         status: 'active',
-        note: '👻 对应技能 live=false；另绑定导出工作流 meeting_minutes.export。音频转写耗时长，超时放宽至 15 分钟',
+        note: '👻 技能已于 2026-09-19 开门（live: true）；另绑定导出工作流 meeting_minutes.export。音频转写耗时长，超时放宽至 15 分钟',
     },
     {
         binding_key: 'meeting_minutes.export',
@@ -530,7 +530,7 @@ export const BINDINGS = Object.freeze([
         version: '1.0',
         timeout_ms: 180000,
         status: 'active',
-        note: '👻 对应技能 live=false',
+        note: '👻 技能已于 2026-09-19 开门（live: true）',
     },
     {
         binding_key: 'doc_drafting',
@@ -538,11 +538,11 @@ export const BINDINGS = Object.freeze([
         display_name: '文档起草',
         base_url_env: 'DIFY_DOC_DRAFTING_API_URL',
         api_key_env: 'DIFY_DOC_DRAFTING_API_KEY',
-        endpoint_kind: 'workflow',
+        endpoint_kind: 'chat', // 旧执行体 /api/doc-drafting/generate 是 {inputs:{doc_type},query,response_mode:blocking} 且读 data.answer，2026-09-19 修正 workflow→chat
         version: '1.0',
         timeout_ms: 180000,
         status: 'active',
-        note: '👻 对应技能 live=false',
+        note: '👻 技能已于 2026-09-19 开门（live: true）',
     },
     {
         binding_key: 'rules_assistant',
@@ -554,7 +554,7 @@ export const BINDINGS = Object.freeze([
         version: '1.0',
         timeout_ms: 180000,
         status: 'active',
-        note: '👻 对应技能 live=false；同时被 contract_review 复用做条款比对',
+        note: '👻 技能已于 2026-09-19 开门（live: true）；同时被 contract_review 复用做条款比对',
     },
 
     // ── 经营分析 ──────────────────────────────────────────────

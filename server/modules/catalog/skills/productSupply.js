@@ -298,7 +298,7 @@ export const productSupplySkills = [
         artifact_kind: 'json',
         permission: { code: 'skill:material_quote:run', data_scope: 'dept' },
         task: { trackable: true, idempotent: false },
-        live: false,
+        live: true,
         legacy: {
             app_id: null,
             routes: ['/api/material-quote/*'],
