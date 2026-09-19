@@ -589,14 +589,14 @@ export const BINDINGS = Object.freeze([
     {
         binding_key: 'order_suggestion',
         provider: 'dify',
-        display_name: '订单建议（未接入）',
+        display_name: '订货建议',
         base_url_env: 'DIFY_ORDER_SUGGESTION_API_URL',
         api_key_env: 'DIFY_ORDER_SUGGESTION_API_KEY',
-        endpoint_kind: 'workflow',
+        endpoint_kind: 'chat', // 旧执行体 chat-messages streaming（XO 专项A 激活，2026-09-19；原 workflow 错标修正）
         version: '1.0',
-        timeout_ms: 180000,
-        status: 'inactive',
-        note: '🏁 2026-09-19 裁决：远程工作流就绪但无技能消费（SSH 凭据缺失无法核对远端密钥）—— 降级存档；若日后补技能 manifest 上线，需先补 env 再切回 active',
+        timeout_ms: 600000,
+        status: 'active',
+        note: 'XO 专项A：技能 manifest（marketCustomer.order_suggestion）+ /api/order-suggestion 试点已接入；JIT 脱敏链路保留在路由内',
     },
 ]);
 

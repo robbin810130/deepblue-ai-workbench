@@ -574,6 +574,26 @@ async function main() {
                 `set=${row?.granted}/${row?.data_scope} 新表=${inNew} 清后=${ex2 === null ? 'null' : '残留'}`);
         }
 
+        // 56. XO 专项A order-suggestion：路由级端到端（试点分支→任务中心建任务→沙箱无Dify失败闭环）
+        {
+            const { rowCount: before } = await pool.query(
+                `SELECT 1 FROM tasks WHERE skill_key='order_suggestion'`);
+            const res = await fetch(`${BASE}/api/order-suggestion`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${ALICE_TOKEN}`, 'content-type': 'application/json' },
+                body: JSON.stringify({ analysis_type: 'group_strategy', tier: '高价值', summary: { x: 1 } }),
+            });
+            const j = await res.json().catch(() => ({}));
+            const { rows: t } = await pool.query(
+                `SELECT task_no FROM tasks WHERE skill_key='order_suggestion' ORDER BY created_at DESC LIMIT 1`);
+            const { rows: runs } = await pool.query(
+                `SELECT tr.binding_key FROM task_runs tr JOIN tasks tk ON tk.id=tr.task_id WHERE tk.skill_key='order_suggestion' ORDER BY tr.started_at DESC LIMIT 1`);
+            check('56. order_suggestion 试点接入（任务建出+绑定正确+失败闭环500）',
+                res.status === 500 && /任务执行失败/.test(j.error || j.message || '')
+                && !!t[0]?.task_no && runs[0]?.binding_key === 'order_suggestion',
+                `http=${res.status} task=${t[0]?.task_no || '无'} run_binding=${runs[0]?.binding_key}`);
+        }
+
     await pool.end();
 
     // ── 汇总 ─────────────────────────────────────────────────

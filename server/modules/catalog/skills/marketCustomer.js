@@ -261,4 +261,37 @@ export const marketCustomerSkills = [
         live: true,
         legacy: { app_id: 'keyaccount', routes: ['/api/key-accounts/*'] },
     },
+    {
+        skill_key: 'order_suggestion',
+        name: '订货建议',
+        scene: 'market_customer',
+        summary: '基于客户分层/单客户 RFM 特征，输出订货策略与补货建议。',
+        icon: 'ShoppingCart',
+        workflow_version: '1.0',
+        execution_mode: 'blocking',
+        requires_confirmation: false,
+        supported_files: [],
+        input_schema: {
+            type: 'object',
+            properties: {
+                analysis_type: { type: 'string', enum: ['group_strategy', 'single_customer'], title: '分析类型' },
+                tier: { type: 'string', title: '客户分层（分组策略必填）' },
+                analysis_data: { type: 'string', title: '分析数据 JSON' },
+            },
+            required: ['analysis_type'],
+        },
+        output_schema: {
+            type: 'object',
+            properties: {
+                text: { type: 'string', title: '建议文本（Markdown）' },
+            },
+            required: ['text'],
+        },
+        binding_key: 'order_suggestion',
+        artifact_kind: 'markdown',
+        permission: { code: 'skill:order_suggestion:run', data_scope: 'dept' },
+        task: { trackable: true, idempotent: true },
+        live: true,
+        legacy: { app_id: 'customer', routes: ['/api/order-suggestion'] },
+    },
 ];

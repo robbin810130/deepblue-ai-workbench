@@ -545,7 +545,7 @@ app.post('/api/order-suggestion', async (req, res) => {
         const DIFY_API_KEY = process.env.DIFY_ORDER_SUGGESTION_API_KEY;
         const DIFY_API_URL = process.env.DIFY_ORDER_SUGGESTION_API_URL || 'http://39.108.221.22/v1/chat-messages';
 
-        if (!DIFY_API_KEY) {
+        if (!DIFY_API_KEY && !legacyBridge.isPilotSkill('order_suggestion')) {
             return res.status(503).json({ error: 'DIFY_ORDER_SUGGESTION_API_KEY 未配置，请在 .env 中填写' });
         }
 
@@ -581,6 +581,43 @@ app.post('/api/order-suggestion', async (req, res) => {
         logAudit(req, { module: 'ORDER_SUGGESTION', action: 'RUN_SUGGESTION', details: { type: analysis_type, summary: !!summary } });
         console.log(`[订货建议] 最终 Payload:`, JSON.stringify(payload, null, 2));
         console.log(`[订货建议] 调用分析引擎, analysis_type=${analysis_type}, tier/customer=${tier || customer?.name || customer?.id}`);
+
+        // ── D4 试点迁移（TASK_CENTER_PILOT 含 order_suggestion 时启用，XO 专项A）──────
+        // JIT 脱敏（占位符掩名）照旧在路由内完成；仅 Dify 调用走任务中心闭环；
+        // 完整结果以合成 SSE 形状回放（一条 message 事件 + [DONE]），前端零改动。
+        if (legacyBridge.isPilotSkill('order_suggestion')) {
+            try {
+                const r = await legacyBridge.runThroughTaskCenter({
+                    skillKey: 'order_suggestion',
+                    title: analysis_type === 'group_strategy'
+                        ? `订货建议·分组策略（${tier}）`
+                        : `订货建议·单客户 #${customer.id}`,
+                    user: req.user,
+                    inputs: { analysis_type, query: JSON.stringify(payload), analysis_data: JSON.stringify(payload) },
+                });
+                if (!r.ok) {
+                    console.error(`[订货建议-任务中心] ${r.taskNo} 失败 ${r.errorCode}: ${r.message}`);
+                    return res.status(500).json({ error: `任务执行失败（${r.taskNo}）：${r.message}` });
+                }
+                let answer = legacyBridge.stripThinkTags(legacyBridge.extractAnswer(r.outputs)) || '';
+                // 复敏：占位符 → 真实姓名（对齐旧流式路径的宽容正则）
+                if (isSingle && originalName) {
+                    answer = answer.replace(new RegExp(`{{C_?\\s*${customer.id}\\s*}}`, 'g'), originalName);
+                }
+                logAudit(req, { module: 'ORDER_SUGGESTION', action: 'RUN_SUGGESTION_PILOT', details: { type: analysis_type, taskNo: r.taskNo } });
+                res.setHeader('Content-Type', 'text/event-stream');
+                res.setHeader('Cache-Control', 'no-cache');
+                res.setHeader('Connection', 'keep-alive');
+                res.setHeader('X-Accel-Buffering', 'no');
+                res.write(`data: ${JSON.stringify({ event: 'message', answer })}\n\n`);
+                res.write('data: [DONE]\n\n');
+                res.end();
+                return;
+            } catch (e) {
+                console.error('[订货建议-任务中心] 异常:', e.message);
+                return res.status(500).json({ error: e.message });
+            }
+        }
 
         const difyResponse = await fetch(DIFY_API_URL, {
             method: 'POST',
