@@ -3,7 +3,8 @@
  *
  * 判定链（自上而下，首个命中即返回）：
  *   1. admin 一律放行（与存量 requireModulePermission 同口径）
- *   2. sys_skill_permissions 显式授权（M6 完整版：permission_code 语义 + data_scope）
+ *   2. skill_permissions 显式授权（M6 完整版：permission_code 语义 + data_scope；
+ *      XO-07 P2 由 sys_skill_permissions 收敛更名，store 内双读兜底）
  *      —— granted=true → granted；granted=false → denied（显式拒绝优先）
  *   3. 旧版 sys_roles.permissions（appId 数组，'*' 全量）—— 存量角色无感回落
  *   4. 以上皆无 → not_evaluated（诚实三态，绝不假装已判定）

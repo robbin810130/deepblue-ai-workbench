@@ -24,6 +24,7 @@ import knowledgeAdminRoutes from './knowledgeAdminRoutes.js'; // 知识库管理
 import keyAccountRoutes from './keyAccountRoutes.js'; // 大客户档案模块路由
 import bidAssistantRoutes from './bidAssistantRoutes.js'; // 投标助手模块路由
 import * as legacyBridge from './modules/tasks/legacyBridge.js'; // D4 试点：存量路由 → 任务中心迁移桥
+import * as notifyStore from './modules/notifications/notify.js'; // XO-07 P1：应用通知并入 task_notifications
 import { ingestTenderOutputs } from './modules/tender/tenderIngest.js'; // 招标检索入库（D4 试点抽出）
 import { loadStagedBuffers } from './modules/files/fileStore.js'; // 暂存文件水合（file_ids → Dify 转换用）
 import reviewPartnerRoutes from './reviewPartnerRoutes.js'; // 复盘搭子模块路由
@@ -7902,13 +7903,14 @@ const getUserId = async (req) => {
     return null;
 };
 
-/** GET /api/notifications - 拉取当前登录用户的通知列表 */
+/** GET /api/notifications - 拉取当前登录用户的通知列表（XO-07 P1：双读 task_notifications + 旧表兜底） */
 app.get('/api/notifications', authenticateToken, async (req, res) => {
     try {
         const userId = await getUserId(req);
         if (!userId) return res.status(401).json({ success: false, message: '无法识别用户身份' });
 
-        const result = await pool.query(`SELECT * FROM sys_notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 100`, [userId]);
+        await notifyStore.ensureNotificationsTable();
+        const rows = await notifyStore.listAppNotifications(userId);
 
         const formatItem = (row) => ({
             id: row.id,
@@ -7921,60 +7923,59 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
             timestamp: new Date(row.created_at).getTime()
         });
 
-        res.json({ success: true, data: result.rows.map(formatItem) });
+        res.json({ success: true, data: rows.map(formatItem) });
     } catch (e) {
         logger.error('[PG] Get notifications error:', e);
         res.status(500).json({ success: false, message: '获取通知失败' });
     }
 });
 
-/** POST /api/notifications - 发送推送系统通知给指定用户 */
+/** POST /api/notifications - 发送推送系统通知给指定用户（XO-07 P1：写入切到 task_notifications，source='app'） */
 app.post('/api/notifications', authenticateToken, async (req, res) => {
     try {
         const userId = await getUserId(req);
         if (!userId) return res.status(401).json({ success: false, message: '无法识别用户身份' });
 
         const { id, appId, appName, title, message } = req.body;
-        const newId = id || `n-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
-        await pool.query(`
-            INSERT INTO sys_notifications (id, user_id, app_id, app_name, title, message)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (id) DO NOTHING
-        `, [newId, userId, appId || '', appName || 'System', title || '', message || '']);
-        res.json({ success: true, id: newId });
+        await notifyStore.ensureNotificationsTable();
+        const r = await notifyStore.notifyApp({ userId, appId, appName, title, message, clientRef: id || null });
+        res.json({ success: true, id: r.id });
     } catch (e) {
         logger.error('[PG] Save notification error:', e);
         res.status(500).json({ success: false, message: '存储通知失败' });
     }
 });
 
-/** PUT /api/notifications/:id/read - 标记通知为已读 */
+/** PUT /api/notifications/:id/read - 标记通知为已读（XO-07 P1：新旧两表同打） */
 app.put('/api/notifications/:id/read', authenticateToken, async (req, res) => {
     try {
         const userId = await getUserId(req);
-        await pool.query(`UPDATE sys_notifications SET is_read = TRUE, updated_at = NOW() WHERE id = $1 AND user_id = $2`, [req.params.id, userId]);
+        await notifyStore.ensureNotificationsTable();
+        await notifyStore.markAppRead(req.params.id, userId);
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ success: false });
     }
 });
 
-/** DELETE /api/notifications/:id - 删除单条通知 */
+/** DELETE /api/notifications/:id - 删除单条通知（XO-07 P1：新旧两表同删） */
 app.delete('/api/notifications/:id', authenticateToken, async (req, res) => {
     try {
         const userId = await getUserId(req);
-        await pool.query(`DELETE FROM sys_notifications WHERE id = $1 AND user_id = $2`, [req.params.id, userId]);
+        await notifyStore.ensureNotificationsTable();
+        await notifyStore.deleteAppNotification(req.params.id, userId);
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ success: false });
     }
 });
 
-/** DELETE /api/notifications - 清空当前用户所有通知 */
+/** DELETE /api/notifications - 清空当前用户所有通知（XO-07 P1：新旧两表同清，仅应用域） */
 app.delete('/api/notifications', authenticateToken, async (req, res) => {
     try {
         const userId = await getUserId(req);
-        await pool.query(`DELETE FROM sys_notifications WHERE user_id = $1`, [userId]);
+        await notifyStore.ensureNotificationsTable();
+        await notifyStore.clearAppNotifications(userId);
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ success: false });

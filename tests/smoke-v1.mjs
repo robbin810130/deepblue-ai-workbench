@@ -521,6 +521,59 @@ async function main() {
                 `scope=${rows[0]?.bs} run_binding=${runs[0]?.binding_key}`);
         }
 
+        // 54. XO-07 P1 应用通知双轨合并：POST 落 task_notifications(source='app')，幂等/读/已读/删除全链
+        {
+            const res1 = await fetch(`${BASE}/api/notifications`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${ALICE_TOKEN}`, 'content-type': 'application/json' },
+                body: JSON.stringify({ id: 'smoke-n1', appId: 'smoke_app', appName: '冒烟应用', title: '冒烟通知', message: 'XO-07 P1' }),
+            });
+            const j1 = await res1.json();
+            const { rows: dbRows } = await pool.query(
+                `SELECT source, app_name FROM task_notifications WHERE client_ref='smoke-n1'`);
+            // 幂等：同 id 重复推送不重复落库
+            await fetch(`${BASE}/api/notifications`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${ALICE_TOKEN}`, 'content-type': 'application/json' },
+                body: JSON.stringify({ id: 'smoke-n1', appId: 'smoke_app', appName: '冒烟应用', title: '冒烟通知', message: 'XO-07 P1' }),
+            });
+            const { rowCount: dupCount } = await pool.query(
+                `SELECT 1 FROM task_notifications WHERE client_ref='smoke-n1'`);
+            // GET 列表可读（旧形状字段）
+            const res2 = await fetch(`${BASE}/api/notifications`, { headers: { Authorization: `Bearer ${ALICE_TOKEN}` } });
+            const j2 = await res2.json();
+            const item = (j2.data || []).find((x) => x.id === 'smoke-n1');
+            // 标记已读
+            await fetch(`${BASE}/api/notifications/smoke-n1/read`, { method: 'PUT', headers: { Authorization: `Bearer ${ALICE_TOKEN}` } });
+            const j3 = await (await fetch(`${BASE}/api/notifications`, { headers: { Authorization: `Bearer ${ALICE_TOKEN}` } })).json();
+            const itemRead = (j3.data || []).find((x) => x.id === 'smoke-n1');
+            // 删除
+            await fetch(`${BASE}/api/notifications/smoke-n1`, { method: 'DELETE', headers: { Authorization: `Bearer ${ALICE_TOKEN}` } });
+            const j4 = await (await fetch(`${BASE}/api/notifications`, { headers: { Authorization: `Bearer ${ALICE_TOKEN}` } })).json();
+            check('54. P1 通知双轨合并（source=app 落库+幂等+读/已读/删除全链）',
+                res1.status === 200 && j1.id === 'smoke-n1'
+                && dbRows[0]?.source === 'app' && dbRows[0]?.app_name === '冒烟应用'
+                && dupCount === 1
+                && item && item.appId === 'smoke_app' && item.isRead === false
+                && itemRead?.isRead === true
+                && !(j4.data || []).some((x) => x.id === 'smoke-n1'),
+                `post=${res1.status} source=${dbRows[0]?.source} dup=${dupCount} read=${itemRead?.isRead}`);
+        }
+
+        // 55. XO-07 P2 权限表收敛：写读新表 skill_permissions + 清除回落
+        {
+            const store = await import('../server/modules/permissions/skillPermissionStore.js');
+            const row = await store.setPermission({ skill_key: 'smoke_skill_x', role_name: 'smoke_role_x', granted: true, data_scope: 'all', granted_by: 9002 });
+            const ex = await store.getExplicit('smoke_skill_x', 'smoke_role_x');
+            const { rowCount: inNew } = await pool.query(
+                `SELECT 1 FROM skill_permissions WHERE skill_key='smoke_skill_x' AND role_name='smoke_role_x'`);
+            await store.clearPermission('smoke_skill_x', 'smoke_role_x');
+            const ex2 = await store.getExplicit('smoke_skill_x', 'smoke_role_x');
+            check('55. P2 权限表收敛（skill_permissions 新表读写 + 双读兜底可用）',
+                row?.granted === true && row?.data_scope === 'all' && ex?.granted === true && inNew === 1 && ex2 === null,
+                `set=${row?.granted}/${row?.data_scope} 新表=${inNew} 清后=${ex2 === null ? 'null' : '残留'}`);
+        }
+
     await pool.end();
 
     // ── 汇总 ─────────────────────────────────────────────────
