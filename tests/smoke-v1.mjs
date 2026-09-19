@@ -88,10 +88,18 @@ async function main() {
     const { isPilotSkill } = await import('../server/modules/tasks/legacyBridge.js');
     const { getSkill } = await import('../server/modules/catalog/index.js');
     const skillLive = (k) => getSkill(k)?.live !== false;
-    const difyConfigured = (k) => !!(
-        process.env[`DIFY_${k.toUpperCase()}_API_KEY`]
-        && process.env[`DIFY_${k.toUpperCase()}_API_URL`]
-    );
+    // 🔴 2026-09-19 修正：原实现按 `DIFY_<SKILL_KEY>_API_KEY` 拼变量名，只对「技能 key 恰等于
+    //   绑定变量名中段」的技能成立 —— contract_review 实际读 DIFY_CONTRACT_AUDIT_*、
+    //   risk_detection 读 DIFY_ECOM_RISK_* …… 于是这些技能被永远判为「未配置」，
+    //   配置感知分支形同虚设（本轮配齐凭据后立刻暴露）。
+    //   改为**直接问绑定注册表**：环境变量名由 bindings.js 单一维护，不再二次推断。
+    const { resolveBinding: resolveBindingOf } = await import('../server/modules/providers/index.js');
+    const difyConfigured = (k) => {
+        const s = getSkill(k);
+        if (!s) return false;
+        const r = resolveBindingOf(s.binding_key);
+        return Boolean(r.ok && r.config.provider !== 'internal');
+    };
 
     // ── A. 目录与权限 ─────────────────────────────────────────
     {
@@ -179,8 +187,11 @@ async function main() {
         const { json } = await api('GET', `/api/v1/tasks/${tFail}`);
         const events = json?.data?.events || [];
         const lastRun = json?.data?.runs?.at(-1);
-        check('13. 执行到终态 failed（绑定缺失 BINDING_INCOMPLETE）',
-            st === 'failed' && lastRun?.error?.code === 'BINDING_INCOMPLETE', `终态=${st}`);
+        // 配置感知：无凭据 → BINDING_INCOMPLETE；凭据齐备 → 失败码来自 Provider（模型/节点错误等）
+        const expectCode = difyConfigured('contract_review') ? null : 'BINDING_INCOMPLETE';
+        check('13. 执行到终态 failed（绑定缺失 / Provider 失败）',
+            st === 'failed' && (expectCode ? lastRun?.error?.code === expectCode : Boolean(lastRun?.error?.code)),
+            `终态=${st} run_error=${lastRun?.error?.code || '无'}`);
         check('14. 事件时间线记录失败事件',
             events.some((e) => e.event_type === 'task_failed'), `共${events.length}条事件`);
     }
@@ -472,32 +483,57 @@ async function main() {
                     check(`${c.no}. ${c.key} 幽灵技能守卫（拒绝执行+不建任务）`,
                         okGhost && taskN === 0, `http=${res.status} ${String(j?.message || '').slice(0, 30)}`);
                 } else if (pilot) {
-                    const okTask = res.status === 500 && /任务执行失败/.test(j?.message || '');
-                    check(`${c.no}. ${c.key} 已开门+试点（任务中心建任务+失败闭环500）`,
-                        okTask && taskN === 1, `http=${res.status} 任务=${taskN} ${String(j?.message || '').slice(0, 30)}`);
+                    // 配置感知：凭据齐备时可能真跑成功（200），凭据缺失时 500 —— 两者都算闭环成立
+                    const okTask = (res.status === 500 || res.status === 200) && taskN === 1;
+                    check(`${c.no}. ${c.key} 已开门+试点（任务中心建任务，路由 500/200 均可）`,
+                        okTask, `http=${res.status} 任务=${taskN} ${String(j?.message || '').slice(0, 30)}`);
                 } else {
-                    const okLegacy = res.status === 503 && taskN === 0;
-                    check(`${c.no}. ${c.key} 已开门+未试点（旧直连503无key+不建任务）`,
+                    // 旧直连路径：无 key → 503 且不建任务；key 齐备 → 真调用（任一状态码）且仍不建任务
+                    const okLegacy = taskN === 0 && (!difyConfigured(c.key) ? res.status === 503 : true);
+                    check(`${c.no}. ${c.key} 已开门+未试点（旧直连不建任务${difyConfigured(c.key) ? '·凭据齐备' : '·无 key 503'}）`,
                         okLegacy, `http=${res.status} 任务=${taskN} ${String(j?.message || j?.error || '').slice(0, 30)}`);
                 }
                 continue;
             }
-            const okRoute = res.status === 500 && /任务执行失败/.test(j?.message || j?.error || ''); // sea/beauty 沿用旧错误形状 {error}
+            const okRouteOld = res.status === 500 && /任务执行失败/.test(j?.message || j?.error || '');
+            // 配置感知（2026-09-19 修正）：凭据齐备时真实调用可能成功，不再强求 500。
+            // 无论成败，任务必须落库、且「状态 ↔ 事件 ↔ 通知」三者自洽：
+            //   task=failed    → 必须有 task_failed 事件 + 未读失败通知
+            //   task=succeeded → 必须有 task_succeeded 通知（成功闭环）
+            // 这条断言同时兜住「工作流失败却被上报为成功」这一类状态失真 bug。
             const { rows } = await pool.query(
                 `SELECT id, status FROM tasks WHERE skill_key=$1 ORDER BY created_at DESC LIMIT 1`,
                 [c.key],
             );
             const t = rows[0];
-            const okTask = t && t.status === 'failed';
-            const { rows: evs } = await pool.query(
-                `SELECT detail FROM task_events WHERE task_id=$1 AND event_type='task_failed'`, [t?.id],
-            );
-            const okNotify = (await pool.query(
-                `SELECT 1 FROM task_notifications WHERE task_id=$1 AND type='task_failed' AND read_at IS NULL`, [t?.id],
-            )).rowCount > 0;
-            check(`${c.no}. ${c.key} 试点闭环（路由500+任务failed+失败通知）`,
-                okRoute && okTask && evs.length > 0 && okNotify,
-                `http=${res.status} task=${t ? t.status : '无'} 事件=${evs.length} 通知=${okNotify ? '有' : '无'}`);
+            const st2 = t?.status;
+            const evTypes = (await pool.query(
+                `SELECT event_type FROM task_events WHERE task_id=$1`, [t?.id],
+            )).rows.map((x) => x.event_type);
+            const notif = (await pool.query(
+                `SELECT type, read_at FROM task_notifications WHERE task_id=$1`, [t?.id],
+            )).rows;
+            const okTask = Boolean(t) && ['failed', 'succeeded', 'waiting_confirmation'].includes(st2);
+            // 三种终局各有**不同的**证据链，配置感知 + 状态自洽：
+            let okEvidence = false;
+            let branch = '';
+            if (st2 === 'failed') {
+                branch = '失败闭环';
+                okEvidence = evTypes.includes('task_failed')
+                    && notif.some((n) => n.type === 'task_failed' && !n.read_at);
+            } else if (evTypes.includes('confirmation_requested')) {
+                // 需人工确认的技能：任务先挂起（或由桥代确认后落 succeeded），证据是确认事件 + 待办
+                branch = '人工确认闭环';
+                okEvidence = evTypes.includes('confirmation_requested')
+                    && notif.some((n) => n.type === 'task_need_confirm');
+            } else {
+                branch = '成功闭环';
+                okEvidence = evTypes.includes('task_succeeded')
+                    && notif.some((n) => n.type === 'task_succeeded');
+            }
+            check(`${c.no}. ${c.key} 试点闭环（任务落库+状态自洽·${branch}）`,
+                okTask && okEvidence,
+                `http=${res.status}${okRouteOld ? '' : '(非500·凭据齐备)'} task=${st2 || '无'} 事件=${evTypes.join('/') || '无'} 通知=${notif.map((n) => n.type).join('/') || '无'}`);
         }
     }
 
@@ -629,8 +665,8 @@ async function main() {
                 `SELECT task_no FROM tasks WHERE skill_key='order_suggestion' ORDER BY created_at DESC LIMIT 1`);
             const { rows: runs } = await pool.query(
                 `SELECT tr.binding_key FROM task_runs tr JOIN tasks tk ON tk.id=tr.task_id WHERE tk.skill_key='order_suggestion' ORDER BY tr.started_at DESC LIMIT 1`);
-            check('56. order_suggestion 试点接入（任务建出+绑定正确+失败闭环500）',
-                res.status === 500 && /任务执行失败/.test(j.error || j.message || '')
+            check('56. order_suggestion 试点接入（任务建出+绑定正确+状态自洽）',
+                (res.status === 500 || res.status === 200)
                 && !!t[0]?.task_no && runs[0]?.binding_key === 'order_suggestion',
                 `http=${res.status} task=${t[0]?.task_no || '无'} run_binding=${runs[0]?.binding_key}`);
         }

@@ -209,6 +209,18 @@ async function _driveRun(task, skill, { inputs, files, bindingScope = null, trac
                 },
                 bindingScope ? { binding_key: bindingKey } : {},
             );
+
+            // 🔴 2026-09-19 修正：Provider 明确回报 failed 时**不得**把任务标成成功。
+            //   原先只用 output.status 记 Run，任务却无条件 transition 到 succeeded →
+            //   Dify 工作流失败（如模型不可用、节点报错）会被上报为「任务完成」并推送成功通知。
+            //   修法：failed 走与 catch 完全相同的失败闭环（不重复调用 finishRun）。
+            if ((output.status || 'succeeded') === 'failed') {
+                const err = new Error((output.warnings || []).join('；') || 'Provider 返回失败状态');
+                err.code = 'PROVIDER_RUN_FAILED';
+                err.trace_id = output.metrics?.trace_id || traceId;
+                throw err;
+            }
+
             await store.finishRun(run.id, {
                 status: output.status || 'succeeded',
                 duration_ms: output.metrics?.duration_ms ?? null,

@@ -181,7 +181,10 @@ export const BINDINGS = Object.freeze([
         display_name: '资质管理',
         base_url_env: 'DIFY_QUALIFICATION_API_URL',
         api_key_env: 'DIFY_QUALIFICATION_API_KEY',
-        endpoint_kind: 'workflow',
+        // 2026-09-19 实测修正 workflow→chat：源应用「资质识别入库」是 advanced-chat；
+        // 旧执行体 server.js 也把 env 里的 `/chat-messages` 后缀剥掉后按 chat 调用。
+        // 实测 /workflows/run → 400 not_workflow_app；/chat-messages → 400 "kind is required"（形态正确）
+        endpoint_kind: 'chat',
         version: '1.0',
         timeout_ms: 90000,
         status: 'active',
@@ -248,14 +251,17 @@ export const BINDINGS = Object.freeze([
     },
     {
         binding_key: 'enterprise_qualification.knowledge',
-        provider: 'dify',
+        // 🔴 2026-09-19 修正：同 knowledge_base —— 这是「资质知识库 dataset 通道」，
+        //   密钥是租户级 dataset token（DIFY_EQ_KNOWLEDGE_API_KEY，源生产与主库共用同一把），
+        //   真实通道是 routes 里的 /sync/trigger 往 Dify dataset 推文档（enterpriseQualificationRoutes.js:724），
+        //   不是 workflows/run。原登记 workflow 会让 runSkill 打到 /workflows/run → 401/400。
+        provider: 'internal',
         display_name: '企业资质库 · 知识检索',
-        base_url_env: 'DIFY_EQ_KNOWLEDGE_API_URL',
-        api_key_env: 'DIFY_EQ_KNOWLEDGE_API_KEY',
-        endpoint_kind: 'workflow',
+        endpoint_kind: 'none',
         version: '1.0',
-        timeout_ms: 120000,
+        timeout_ms: 0,
         status: 'active',
+        note: '平台内部编排：走 /datasets 文档同步与检索；dataset token 由路由直读',
     },
 
     // ── 商品与供应链 ──────────────────────────────────────────
@@ -310,11 +316,13 @@ export const BINDINGS = Object.freeze([
         display_name: '核查报价',
         base_url_env: 'DIFY_QUOTE_VERIFY_API_URL',
         api_key_env: 'DIFY_QUOTE_VERIFY_API_KEY',
-        endpoint_kind: 'workflow',
+        // 2026-09-19 实测修正 workflow→chat：源应用「物料匹配&报价审核」是 advanced-chat，
+        // 源生产 env 的 DIFY_QUOTE_VERIFY_API_URL 即以 /v1/chat-messages 结尾
+        endpoint_kind: 'chat',
         version: '1.0',
         timeout_ms: 180000,
         status: 'active',
-        note: '另绑定文件解析工作流 quote_verify.file',
+        note: '另绑定文件解析工作流 quote_verify.file（该子绑定同应用，实为 chat——见其注释）',
     },
     {
         binding_key: 'quote_verify.file',
@@ -322,11 +330,16 @@ export const BINDINGS = Object.freeze([
         display_name: '核查报价 · 文件解析',
         base_url_env: 'DIFY_QUOTE_VERIFY_FILE_API_URL',
         api_key_env: 'DIFY_QUOTE_VERIFY_FILE_API_KEY',
-        file_input_var: 'quote_file', // Dify 工作流B文件输入变量名（workflows/run 需按变量名放进 inputs）
-        endpoint_kind: 'workflow',
+        file_input_var: 'quote_file', // Dify 工作流B文件输入变量名（workflows/run 需按变量名放进 inputs；chat 形态下改用顶层 files）
+        // 🔴 2026-09-19 实测修正 workflow→chat，并发现**源生产此链路本就是坏的**：
+        //   绑定指向的应用「物料匹配&报价审核_0818」是 advanced-chat，而旧执行体
+        //   routes/quoteVerify.js:184 硬编码打 `${apiUrl}/workflows/run` → 线上必然 400 not_workflow_app。
+        //   实测确认：/workflows/run → not_workflow_app；/chat-messages → 正常受理。
+        endpoint_kind: 'chat',
         version: '1.0',
         timeout_ms: 180000,
         status: 'active',
+        note: '文件解析；chat 形态下文件走消息附件（与 material_quote 同一应用不同入口）',
     },
     {
         binding_key: 'invoice_verify',
@@ -417,7 +430,8 @@ export const BINDINGS = Object.freeze([
         display_name: '文档文案',
         base_url_env: 'DIFY_DOC_COPYWRITING_API_URL',
         api_key_env: 'DIFY_DOC_COPYWRITING_API_KEY',
-        endpoint_kind: 'workflow',
+        // 2026-09-19 实测修正 workflow→chat：绑定的应用「文档起草」是 advanced-chat（与 doc_drafting 同应用）
+        endpoint_kind: 'chat',
         version: '1.0',
         timeout_ms: 120000,
         status: 'inactive',
@@ -463,16 +477,19 @@ export const BINDINGS = Object.freeze([
     // ── 企业知识 ──────────────────────────────────────────────
     {
         binding_key: 'knowledge_base',
-        provider: 'dify',
+        // 🔴 2026-09-19 修正：本绑定**不是**单个 Dify 应用，是「租户级 dataset 通道」。
+        //   原先登记为 provider=dify + endpoint_kind=chat，配的是 dataset token，
+        //   一旦经 runSkill 执行就会 POST /v1/chat-messages → 401 unauthorized
+        //   （实测确认；dataset token 只能打 /datasets/*）。
+        //   真实通道：检索走 /api/knowledge/*（services/difyKnowledgeService.js，用
+        //   DIFY_KNOWLEDGE_API_KEY + DIFY_KNOWLEDGE_DATASET_ID），生成复用 rules_assistant。
+        provider: 'internal',
         display_name: '知识库',
-        base_url_env: 'DIFY_KNOWLEDGE_API_URL',
-        api_key_env: 'DIFY_KNOWLEDGE_API_KEY',
-        endpoint_kind: 'chat',
+        endpoint_kind: 'none',
         version: '1.0',
-        timeout_ms: 180000,
+        timeout_ms: 0,
         status: 'active',
-        datasets: ['DIFY_KNOWLEDGE_DATASET_ID'],
-        note: '主知识库，另经 services/difyKnowledgeService.js 走 /datasets 接口做文档管理',
+        note: '平台内部编排：dataset 检索 + rules_assistant 生成。相关 env（DIFY_KNOWLEDGE_API_KEY / DIFY_KNOWLEDGE_DATASET_ID）仍须配置，但由 /api/knowledge/* 直读，不属本绑定的 app 凭据',
     },
     {
         binding_key: 'daily_news',
@@ -515,7 +532,11 @@ export const BINDINGS = Object.freeze([
         display_name: '会议纪要 · 导出',
         base_url_env: 'DIFY_MEETING_MINUTES_EXPORT_API_URL',
         api_key_env: 'DIFY_MEETING_MINUTES_EXPORT_API_KEY',
-        endpoint_kind: 'workflow',
+        // 2026-09-19 实测修正 workflow→chat：应用「会议纪要Markdown转docx」是 advanced-chat；
+        // 旧执行体 routes/meetingMinutes.js 直接 POST 该 URL（源值是 .../v1/chat-messages），
+        // 请求体带 query + response_mode，读 data.files / data.answer —— 全是 chat-messages 形状。
+        // 实测 /chat-messages → 200 且返回 event=message
+        endpoint_kind: 'chat',
         version: '1.0',
         timeout_ms: 180000,
         status: 'active',
