@@ -5,6 +5,7 @@ import { useEffect, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { ArrowLeft, PlayCircle, ServerCrash } from 'lucide-react';
 import { api, type ApiScene, type ApiSkill } from '../../api/client';
+import { sceneApiKey } from '../../api/sceneMap';
 
 function LiveTag({ live }: { live: boolean }) {
   return live ? (
@@ -20,7 +21,12 @@ export function SceneDetailPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    api.getScene(sceneKey).then(setScene).catch((e: Error) => setError(e.message));
+    setScene(null);
+    setError(null);
+    api
+      .getScene(sceneApiKey(sceneKey))
+      .then(setScene)
+      .catch((e: Error) => setError(e.message));
   }, [sceneKey]);
 
   if (error) {

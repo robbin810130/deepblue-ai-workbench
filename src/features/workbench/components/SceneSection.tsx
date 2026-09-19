@@ -9,6 +9,7 @@
 import { ArrowRight } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { SCENES, SCENE_TONE } from '../../../config/scenes';
+import { sceneApiKey } from '../../../api/sceneMap';
 import { cn } from '../../../components/ui/cn';
 import type { SceneKey } from '../../../types/domain';
 
@@ -99,9 +100,9 @@ function SceneCard({ sceneKey }: { sceneKey: SceneKey }) {
       role="link"
       tabIndex={0}
       aria-label={`进入场景 ${scene.name}`}
-      onClick={() => navigate(`/scenes/${scene.key}`)}
+      onClick={() => navigate(`/scenes/${sceneApiKey(scene.key)}`)}
       onKeyDown={(e) => {
-        if (e.key === 'Enter') navigate(`/scenes/${scene.key}`);
+        if (e.key === 'Enter') navigate(`/scenes/${sceneApiKey(scene.key)}`);
       }}
       className={cn(
         'group relative flex min-h-[96px] cursor-pointer flex-col overflow-hidden rounded-[14px] p-[14px]',

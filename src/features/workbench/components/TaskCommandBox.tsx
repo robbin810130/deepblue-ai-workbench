@@ -14,6 +14,7 @@ import { useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowRight, Paperclip, Sparkles, X } from 'lucide-react';
 import { SCENES } from '../../../config/scenes';
+import { sceneApiKey } from '../../../api/sceneMap';
 import { cn } from '../../../components/ui/cn';
 
 interface Suggestion {
@@ -206,7 +207,7 @@ export function TaskCommandBox() {
             </button>
             <button
               type="button"
-              onClick={() => navigate(`/scenes/${suggestion.sceneKey}`)}
+              onClick={() => navigate(`/scenes/${sceneApiKey(suggestion.sceneKey)}`)}
               className="h-8 rounded-control bg-primary-500 px-3.5 text-caption font-medium text-white transition-colors hover:bg-primary-600"
             >
               去发起
