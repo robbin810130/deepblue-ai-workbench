@@ -1,0 +1,99 @@
+# 深蓝工作台 · Dify 本地化打包方案
+
+> **日期**：2026-09-19 ｜ **状态**：v1（盘点完成 + 导出工具就绪，实测待凭据）
+> **定位**：appliance 一体机最大件——设备内置 Dify 实例（客户内网默认断网），
+> 预置全部技能工作流 + 知识库 + 模型凭据，随出厂镜像烧录。
+> 上游文档：`appliance部署方案.md` §六 遗留清单 #1。
+
+---
+
+## 一、现状盘点结论（2026-09-19 实测）
+
+| 项 | 数值 | 来源 |
+|---|---|---|
+| 本地 Dify 实例 | Dify 1.14.2 @ http://localhost:8088（OrbStack `dify-agent` 项目） | dify-stack |
+| 应用总数 | **56**（advanced-chat 37 / workflow 17 / agent-chat 1 / completion 1） | dify 库 `apps` |
+| 带 workflow 的应用 | 54 | `workflows` 表 |
+| 已发放 API token | 36 app token + 1 dataset token | `api_tokens` 表 |
+| deepblue 侧 AI 绑定 | 42 个（含子绑定） | `server/modules/providers/bindings.js` |
+
+**盘点产物**：`dify-bundle/app-inventory.json`（56 应用全量：id/name/mode/tokens/has_workflow）。
+⚠️ 该文件含真实 token，仅存本地/出厂镜像，**不进 git**（已 gitignore）。
+
+## 二、绑定 ↔ 应用 映射链路（已验证）
+
+```
+deepblue 绑定 env 值(如 app-0319...) = Dify api_tokens.token → app_id → apps.name
+```
+
+已验证样本：`DIFY_ORDER_RECOGNITION_API_KEY` = `api_tokens` 中「订单识别」应用的 token，完全吻合
+（本地 dify 库即源服务器 39.108.221.22 的还原数据，token 表即源发放记录全集）。
+
+**精确映射的取得方式**：需要源服务器上 deepblue 部署的 `.env`（42 个 `DIFY_*_API_KEY` 值），
+与本地 `api_tokens` 做 join 即得逐绑定 → 应用映射。→ **待老大提供**（见 §七）。
+
+## 三、打包物构成（dify-bundle/）
+
+```
+dify-bundle/
+├── app-inventory.json        # 应用全量清单（含 token，敏感，不进 git）
+├── dsls/                     # 逐应用 DSL 导出（include_secret=false）
+│   ├── 01-深蓝AI_市场洞察.yml
+│   └── ...
+├── dsl-manifest.json         # 导出清单（app_id ↔ 文件名，无密钥，可进 git）
+├── datasets/                 # 知识库导出（pipeline 待 §五）
+├── model-credentials.md      # 模型供应商清单（仅列供应商/模型名，密钥现场注入）
+└── binding-map.json          # 42 绑定 → 应用映射（待源 env join 后生成）
+```
+
+**随设备交付形态**：dify-bundle 不并入 deepblue 发行包（体积与敏感度原因），
+由出厂镜像直接烧录到设备盘内 Dify 数据卷。
+
+## 四、DSL 导出（工具已就绪，实测待凭据）
+
+```bash
+DIFY_CONSOLE_EMAIL=... DIFY_CONSOLE_PASSWORD=... \
+  node scripts/export-dify-dsls.mjs            # 默认导出全部非 completion 应用
+# 可选: --all 全量 / --only 关键词 / --base http://...
+```
+
+- 通道：Dify Console API（`POST /console/api/login` → `GET /console/api/apps/{id}/export/download?include_secret=false`）
+- 凭据仅经环境变量传入，不落盘；DSL 本身 `include_secret=false` 不含模型密钥
+- 登录失败分支已用假凭据实测（401 正确报错）；**真实导出待 console 凭据**（§七）
+
+## 五、现场导入与凭据预置（设计）
+
+1. **应用导入**：Dify 控制台 DSL 导入 API 逐个导入 `dsls/*.yml`（导入后 app_id 会变，
+   依靠 `dsl-manifest.json` 的名称映射重建 `api_tokens` 并回填设备版 deepblue `.env`）。
+2. **知识库**：`datasets/` 导入（知识库 API / 控制台导入，含分段与 Embedding 重建，
+   需设备端模型就绪后执行）。⚠️ 工作流节点内的 `dataset_ids` 引用在导入后需按映射重写——
+   复用 `generate_dsl.cjs` 的 DSL 改写经验做成批量步骤。
+3. **模型凭据**：设备端「设置→模型供应商」预置通义/DeepSeek/火山方舟等凭据（客户授权
+   或国产模型 API）；`.env` 内 `ARK_API_KEY` 等由现场填写，出厂镜像不含任何密钥。
+4. **对齐纪律**：设备内 Dify 版本锁定 1.14.2（与开发环境同版），DSL schema 版本随导出文件
+   自带；导入失败的应用按 manifest 逐一排查，不静默跳过。
+
+## 六、与整体交付的衔接
+
+```
+出厂镜像 = OS + Docker/Node + Dify 1.14.2(容器+数据卷) + dify-bundle(烧录)
+         + deepblue 发行包(deepblue-release-<ver>.tar.gz，见 appliance部署方案 §四)
+首启流程 = Dify 起服 → 导入 DSL/知识库 → 预置模型凭据 → 生成 api_tokens 回填 .env
+         → deepblue upgrade.sh 首装 → check-appliance-readiness 全绿
+```
+
+`check-appliance-readiness.js` 的「42 绑定 env 完整性」检查即现场导入完成度的验收关卡。
+
+## 七、待办输入（需要老大）
+
+| # | 需要什么 | 用途 | 阻塞点 |
+|---|---|---|---|
+| 1 | 本地 Dify console 账号密码（任一可登账号） | DSL 批量导出实测（§四脚本已就绪） | 导出未跑 |
+| 2 | 源服务器 39.108.221.22 上 deepblue 的 `.env`（或仅 42 个 `DIFY_*_API_KEY` 值） | 与 api_tokens join → `binding-map.json` 精确映射 | 绑定映射未定 |
+| 3 | 确认知识库清单（哪些 dataset 随设备走） | datasets/ 导出范围 | §五.2 未启动 |
+
+## 八、后续工具排期
+
+1. `scripts/import-dify-dsls.mjs`（现场批量导入 + token 重建 + dataset_ids 重写）
+2. `scripts/export-dify-datasets.mjs`（知识库导出）
+3. 出厂镜像构建（依赖硬件选型，§六 首启流程固化为一键脚本）

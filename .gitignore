@@ -101,3 +101,9 @@ release/
 .release-cache/
 .runtime.pid
 upgrades.log
+
+# ── Dify 本地化打包（含 token，不进 git；dsl-manifest 除外）──
+dify-bundle/app-inventory.json
+dify-bundle/dsls/
+dify-bundle/datasets/
+dify-bundle/binding-map.json
