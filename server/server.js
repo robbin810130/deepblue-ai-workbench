@@ -587,6 +587,22 @@ async function runInitDDL() {
                 created_at   TIMESTAMPTZ DEFAULT NOW()
             )
         `));
+        // ── XO-07 P3 用户身份迁移（单租户平移）：存量库幂等列对齐到新模型 ──
+        await safeDDL('ddl#p3-users', () => pool.query(`
+            ALTER TABLE sys_users
+                ADD COLUMN IF NOT EXISTS display_name  VARCHAR(120) DEFAULT '',
+                ADD COLUMN IF NOT EXISTS email         VARCHAR(160) DEFAULT '',
+                ADD COLUMN IF NOT EXISTS role          VARCHAR(40)  DEFAULT 'user',
+                ADD COLUMN IF NOT EXISTS is_active     BOOLEAN      DEFAULT TRUE,
+                ADD COLUMN IF NOT EXISTS avatar_url    TEXT,
+                ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ
+        `));
+        await safeDDL('ddl#p3-roles', () => pool.query(`
+            ALTER TABLE sys_roles
+                ADD COLUMN IF NOT EXISTS display_name VARCHAR(120) DEFAULT '',
+                ADD COLUMN IF NOT EXISTS is_builtin   BOOLEAN      DEFAULT FALSE,
+                ADD COLUMN IF NOT EXISTS permissions  JSONB DEFAULT '[]'::jsonb
+        `));
         await safeDDL('ddl#1', () => pool.query(`ALTER TABLE sys_users ADD COLUMN IF NOT EXISTS department VARCHAR(100) DEFAULT ''`));
         await safeDDL('ddl#2', () => pool.query(`
             CREATE TABLE IF NOT EXISTS sys_user_sessions (
