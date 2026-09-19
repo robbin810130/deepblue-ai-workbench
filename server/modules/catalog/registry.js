@@ -109,10 +109,12 @@ export function listScenes(options = {}) {
     }
     if (!options.with_skills) return scenes;
 
-    return scenes.map((scene) => ({
-        ...scene,
-        skills: listSkills({ scene: scene.scene_key }),
-    }));
+    return scenes.map((scene) => {
+        const skills = listSkills({ scene: scene.scene_key });
+        // skill_count 与 skills 一并派生：前端场景总览卡片只需计数，
+        // 缺失该字段会渲染成「0 个技能」（契约见 03_API接口规范 §4 / 06_PRD §2）。
+        return { ...scene, skill_count: skills.length, skills };
+    });
 }
 
 /**
