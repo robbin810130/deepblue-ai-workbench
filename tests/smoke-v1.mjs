@@ -495,6 +495,28 @@ async function main() {
                 `http=${res.status} 任务数 ${before}→${after}`);
         }
 
+        // 52. review_partner 子绑定 scope 路由（bridge 级）：transaction scope 建任务
+        //     并以 review_partner.transaction 绑定执行（沙箱无 Dify → 任务失败闭环）
+        {
+            const { runThroughTaskCenter } = await import('../server/modules/tasks/legacyBridge.js');
+            const r = await runThroughTaskCenter({
+                skillKey: 'review_partner',
+                title: '冒烟·复盘搭子交易情况',
+                bindingScope: 'transaction',
+                user: { id: 9002, username: 'smoke_alice', role: 'user' },
+                inputs: { order_list_json: '[]', local_life_json: '[]' },
+                timeoutMs: 120000,
+                pollMs: 400,
+            });
+            const { rows } = await pool.query(
+                `SELECT input->>'binding_scope' AS bs FROM tasks WHERE skill_key='review_partner' AND title LIKE '%交易情况%' ORDER BY created_at DESC LIMIT 1`);
+            const { rows: runs } = await pool.query(
+                `SELECT tr.binding_key FROM task_runs tr JOIN tasks t ON t.id=tr.task_id WHERE t.skill_key='review_partner' ORDER BY tr.started_at DESC LIMIT 1`);
+            check('52. review_partner.transaction scope 路由（bridge级：scope落库+run绑定正确）',
+                rows[0]?.bs === 'transaction' && runs[0]?.binding_key === 'review_partner.transaction',
+                `scope=${rows[0]?.bs} run_binding=${runs[0]?.binding_key}`);
+        }
+
     await pool.end();
 
     // ── 汇总 ─────────────────────────────────────────────────

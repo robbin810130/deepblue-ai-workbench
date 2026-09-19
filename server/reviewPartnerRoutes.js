@@ -2,6 +2,7 @@
 // server/reviewPartnerRoutes.js — 复盘搭子模块路由
 // ============================================================
 import express from 'express';
+import * as legacyBridge from './modules/tasks/legacyBridge.js'; // D4 试点：任务中心迁移桥
 import multer from 'multer';
 import fs from 'fs';
 import path from 'path';
@@ -354,6 +355,33 @@ router.post('/upload', (req, res, next) => {
             });
         }
 
+        // ── D4 试点迁移（TASK_CENTER_PILOT 含 review_partner 时启用，默认绑定）──────
+        // 仅替换 Dify 调用方式为任务中心闭环；Excel 解析与落库逻辑原样复用。
+        let resultData;
+        if (legacyBridge.isPilotSkill('review_partner')) {
+            try {
+                const r = await legacyBridge.runThroughTaskCenter({
+                    skillKey: 'review_partner',
+                    title: '复盘搭子·主流程数据分析',
+                    user: req.user,
+                    inputs: {
+                        index_json: JSON.stringify(summaryData),
+                        ad_json: JSON.stringify(adData),
+                        zone_json: JSON.stringify(zoneData),
+                        we_json: JSON.stringify(materialData),
+                    },
+                });
+                if (!r.ok) {
+                    console.error(`[复盘搭子-任务中心] ${r.taskNo} 失败 ${r.errorCode}: ${r.message}`);
+                    return res.status(500).json({ success: false, message: `任务执行失败（${r.taskNo}）：${r.message}` });
+                }
+                resultData = { data: { outputs: r.outputs } };
+            } catch (e) {
+                console.error('[复盘搭子-任务中心] 异常:', e.message);
+                return res.status(500).json({ success: false, message: e.message });
+            }
+
+        } else {
         // 触发 DIFY 工作流（传 JSON 字符串）
         const payload = {
             inputs: {
@@ -386,6 +414,7 @@ router.post('/upload', (req, res, next) => {
         }
 
         const resultData = await difyRes.json();
+        }
         console.log('[复盘搭子] 工作流执行成功');
 
         // ■ 解析 DIFY 返回的 result_json 并存入数据库
@@ -896,6 +925,34 @@ router.post('/mini-program/upload', (req, res, next) => {
         }
         console.log(`[复盘搭子] 小程序数据日期范围: ${beginDate} ~ ${endDate}`);
 
+        // ── D4 试点迁移（scope=mini_program）──────────
+        let resultData;
+        if (legacyBridge.isPilotSkill('review_partner')) {
+            try {
+                const r = await legacyBridge.runThroughTaskCenter({
+                    skillKey: 'review_partner',
+                    title: `复盘搭子·小程序数据（${beginDate}~${endDate}）`,
+                    user: req.user,
+                    bindingScope: 'mini_program',
+                    inputs: {
+                        uv_pv_json: JSON.stringify(uvPvData),
+                        core_metrics_json: JSON.stringify(coreMetricsData),
+                        click_json: JSON.stringify(clickJsonData),
+                        begin_date: beginDate,
+                        end_date: endDate,
+                    },
+                });
+                if (!r.ok) {
+                    console.error(`[复盘搭子-任务中心] ${r.taskNo} 失败 ${r.errorCode}: ${r.message}`);
+                    return res.status(500).json({ success: false, message: `任务执行失败（${r.taskNo}）：${r.message}` });
+                }
+                resultData = { data: { outputs: r.outputs } };
+            } catch (e) {
+                console.error('[复盘搭子-任务中心] 异常:', e.message);
+                return res.status(500).json({ success: false, message: e.message });
+            }
+
+        } else {
         const payload = {
             inputs: {
                 uv_pv_json: JSON.stringify(uvPvData),
@@ -929,6 +986,7 @@ router.post('/mini-program/upload', (req, res, next) => {
         }
 
         const resultData = await difyRes.json();
+        }
         console.log('[复盘搭子] 小程序工作流执行成功');
 
         // 解析 DIFY 返回的 result_json 并存入数据库
@@ -1188,6 +1246,32 @@ router.post('/order-page/upload', (req, res, next) => {
         const difyEndDate = `${endDate.slice(0, 4)}/${endDate.slice(4, 6)}/${endDate.slice(6, 8)}`;
         console.log(`[复盘搭子-点餐聚合页] 日期范围: ${difyBeginDate} ~ ${difyEndDate}`);
 
+        // ── D4 试点迁移（scope=order_page）──────────
+        let resultData;
+        if (legacyBridge.isPilotSkill('review_partner')) {
+            try {
+                const r = await legacyBridge.runThroughTaskCenter({
+                    skillKey: 'review_partner',
+                    title: `复盘搭子·点餐聚合页（${difyBeginDate}~${difyEndDate}）`,
+                    user: req.user,
+                    bindingScope: 'order_page',
+                    inputs: {
+                        promotion_data_json: JSON.stringify(parsedRows),
+                        begin_date: difyBeginDate,
+                        end_date: difyEndDate,
+                    },
+                });
+                if (!r.ok) {
+                    console.error(`[复盘搭子-任务中心] ${r.taskNo} 失败 ${r.errorCode}: ${r.message}`);
+                    return res.status(500).json({ success: false, message: `任务执行失败（${r.taskNo}）：${r.message}` });
+                }
+                resultData = { data: { outputs: r.outputs } };
+            } catch (e) {
+                console.error('[复盘搭子-任务中心] 异常:', e.message);
+                return res.status(500).json({ success: false, message: e.message });
+            }
+
+        } else {
         const payload = {
             inputs: {
                 promotion_data_json: JSON.stringify(parsedRows),
@@ -1220,6 +1304,7 @@ router.post('/order-page/upload', (req, res, next) => {
         }
 
         const resultData = await difyRes.json();
+        }
         console.log('[复盘搭子-点餐聚合页] DIFY 工作流执行成功');
 
         // 解析 DIFY 返回的 result_json 并存入数据库
@@ -1457,6 +1542,31 @@ router.post('/transaction/upload', (req, res, next) => {
             return res.status(500).json({ success: false, message: '服务端未配置 DIFY_TRANSACTION_API_KEY / DIFY_TRANSACTION_API_URL' });
         }
 
+        // ── D4 试点迁移（scope=transaction）──────────
+        let resultData;
+        if (legacyBridge.isPilotSkill('review_partner')) {
+            try {
+                const r = await legacyBridge.runThroughTaskCenter({
+                    skillKey: 'review_partner',
+                    title: '复盘搭子·交易情况',
+                    user: req.user,
+                    bindingScope: 'transaction',
+                    inputs: {
+                        order_list_json: JSON.stringify(orderListJson),
+                        local_life_json: JSON.stringify(localLifeJson),
+                    },
+                });
+                if (!r.ok) {
+                    console.error(`[复盘搭子-任务中心] ${r.taskNo} 失败 ${r.errorCode}: ${r.message}`);
+                    return res.status(500).json({ success: false, message: `任务执行失败（${r.taskNo}）：${r.message}` });
+                }
+                resultData = { data: { outputs: r.outputs } };
+            } catch (e) {
+                console.error('[复盘搭子-任务中心] 异常:', e.message);
+                return res.status(500).json({ success: false, message: e.message });
+            }
+
+        } else {
         const payload = {
             inputs: {
                 order_list_json: JSON.stringify(orderListJson),
@@ -1488,6 +1598,7 @@ router.post('/transaction/upload', (req, res, next) => {
         }
 
         const resultData = await difyRes.json();
+        }
         console.log('[复盘搭子-交易情况] DIFY 工作流执行成功');
 
         // ── 解析 DIFY 返回结果 ──
