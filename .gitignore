@@ -94,3 +94,10 @@ venv/
 
 # 任务文件暂存区（运行时上传，不入库）
 server/modules/storage/
+
+# ── appliance 发行包（build-release 产物与缓存）──
+release/
+.release-stage/
+.release-cache/
+.runtime.pid
+upgrades.log
