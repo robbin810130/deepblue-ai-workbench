@@ -81,6 +81,18 @@ async function main() {
     console.log('\n========== /api/v1 真库冒烟（Docker PG）==========\n');
     const pool = new pg.Pool({ connectionString: PG_URL });
 
+    // ── 运行配置探针：断言随真实配置分支，不再随「开关/live/凭据」漂移而腐化 ──
+    // 服务端与测试进程同源读取仓库根 .env（不覆盖运行时已设的 env），因此这里读到的
+    // TASK_CENTER_PILOT / 技能 live / Dify 凭据 与运行中的 server 完全一致。
+    await import('dotenv/config');
+    const { isPilotSkill } = await import('../server/modules/tasks/legacyBridge.js');
+    const { getSkill } = await import('../server/modules/catalog/index.js');
+    const skillLive = (k) => getSkill(k)?.live !== false;
+    const difyConfigured = (k) => !!(
+        process.env[`DIFY_${k.toUpperCase()}_API_KEY`]
+        && process.env[`DIFY_${k.toUpperCase()}_API_URL`]
+    );
+
     // ── A. 目录与权限 ─────────────────────────────────────────
     {
         const { json } = await api('GET', '/api/v1/health/skills', { token: ADMIN_TOKEN });
@@ -340,8 +352,9 @@ async function main() {
             `${pilotNotify.length} 条通知`);
     }
     {
-        // 开关关闭验证：quote_verify 不在 TASK_CENTER_PILOT 里（server 只开了其余五个）
-        // → 走旧直连路径，报「服务端未配置」且【不】建任务。
+        // 35. 开关联动验证：quote_verify 是否在 TASK_CENTER_PILOT 决定走「任务中心」还是「旧直连」。
+        //     断言随真实开关分支 —— 启用则建任务+失败闭环，关闭则旧路径 500 且不建任务。
+        const on = isPilotSkill('quote_verify');
         const before = await pool.query(`SELECT count(*)::int AS n FROM tasks WHERE skill_key='quote_verify'`);
         const res = await fetch(`${BASE}/api/quote-verify/run`, {
             method: 'POST',
@@ -350,10 +363,17 @@ async function main() {
         });
         const body = await res.json().catch(() => ({}));
         const after = await pool.query(`SELECT count(*)::int AS n FROM tasks WHERE skill_key='quote_verify'`);
-        check('35. 开关未列技能走旧路径且不建任务',
-            res.status === 500 && /未配置/.test(body?.message || '')
-                && after.rows[0].n === before.rows[0].n,
-            `http=${res.status} 任务数 ${before.rows[0].n}→${after.rows[0].n}`);
+        if (on) {
+            check('35. quote_verify 开关启用→任务中心（建任务+失败闭环500）',
+                res.status === 500 && /任务执行失败/.test(body?.message || '')
+                    && after.rows[0].n === before.rows[0].n + 1,
+                `http=${res.status} 任务数 ${before.rows[0].n}→${after.rows[0].n}`);
+        } else {
+            check('35. quote_verify 开关关闭→旧直连（未配置500+不建任务）',
+                res.status === 500 && /未配置/.test(body?.message || '')
+                    && after.rows[0].n === before.rows[0].n,
+                `http=${res.status} 任务数 ${before.rows[0].n}→${after.rows[0].n}`);
+        }
     }
     {
         // ── 36-39：tender / hazard / contract / material 四个新试点的失败闭环 ──
@@ -373,7 +393,7 @@ async function main() {
             },
             {
                 no: 39, key: 'material_quote', path: '/api/material-quote/run', auth: true,
-                body: { query: '开始' }, ghostGuard: true, // 幽灵技能（live:false）：桥必须拒绝且不建任务
+                body: { query: '开始' }, ghostGuard: true, // 配置感知：幽灵守卫 / 试点闭环 / 旧直连 三态分支
             },
             {
                 no: 40, key: 'market_insight', path: '/api/market-insight/run', auth: true,
@@ -438,13 +458,28 @@ async function main() {
             });
             const j = await res.json().catch(() => ({}));
             if (c.ghostGuard) {
-                // 幽灵技能守卫：拒绝执行且不建任务（500 + 技能不可用）
-                const okGhost = res.status === 500 && /技能不可用/.test(j?.message || '');
-                const { rowCount: noTask } = await pool.query(
+                // 39. material_quote 配置感知三态：
+                //   - 未开门(live:false) → 桥必须拒绝（技能不可用）且不建任务；
+                //   - 已开门 + 纳入试点  → 任务中心建任务并失败闭环；
+                //   - 已开门 + 未纳入试点 → 旧直连路径（无 key 时 503）且不建任务。
+                const live = skillLive(c.key);
+                const pilot = isPilotSkill(c.key);
+                const { rowCount: taskN } = await pool.query(
                     `SELECT 1 FROM tasks WHERE skill_key=$1 AND title LIKE '%物料报价%'`, [c.key],
                 );
-                check(`${c.no}. ${c.key} 幽灵技能守卫（拒绝执行+不建任务）`,
-                    okGhost && noTask === 0, `http=${res.status} ${String(j?.message || '').slice(0, 30)}`);
+                if (!live) {
+                    const okGhost = res.status === 500 && /技能不可用/.test(j?.message || '');
+                    check(`${c.no}. ${c.key} 幽灵技能守卫（拒绝执行+不建任务）`,
+                        okGhost && taskN === 0, `http=${res.status} ${String(j?.message || '').slice(0, 30)}`);
+                } else if (pilot) {
+                    const okTask = res.status === 500 && /任务执行失败/.test(j?.message || '');
+                    check(`${c.no}. ${c.key} 已开门+试点（任务中心建任务+失败闭环500）`,
+                        okTask && taskN === 1, `http=${res.status} 任务=${taskN} ${String(j?.message || '').slice(0, 30)}`);
+                } else {
+                    const okLegacy = res.status === 503 && taskN === 0;
+                    check(`${c.no}. ${c.key} 已开门+未试点（旧直连503无key+不建任务）`,
+                        okLegacy, `http=${res.status} 任务=${taskN} ${String(j?.message || j?.error || '').slice(0, 30)}`);
+                }
                 continue;
             }
             const okRoute = res.status === 500 && /任务执行失败/.test(j?.message || j?.error || ''); // sea/beauty 沿用旧错误形状 {error}
@@ -481,9 +516,9 @@ async function main() {
                 `scope=${t?.bs} run_binding=${runs[0]?.binding_key}`);
         }
 
-        // 51. quote_verify 未列入开关时，/api/quote-verify/upload 走旧路径守卫
-        //     （JSON 请求无文件 → 400 未找到文件数据，且不建「核查报价（文件解析）」任务）
+        // 51. quote_verify /upload 的 file_ids 通道：开关启用→任务中心建任务；关闭→旧路径守卫400
         {
+            const on = isPilotSkill('quote_verify');
             const { rowCount: before } = await pool.query(
                 `SELECT 1 FROM tasks WHERE title='核查报价（文件解析）'`);
             const res = await fetch(`${BASE}/api/quote-verify/upload`, {
@@ -494,9 +529,15 @@ async function main() {
             const j = await res.json().catch(() => ({}));
             const { rowCount: after } = await pool.query(
                 `SELECT 1 FROM tasks WHERE title='核查报价（文件解析）'`);
-            check('51. quote_verify 开关关闭走旧路径（400+不建任务）',
-                res.status === 400 && /未找到文件数据/.test(j?.message || '') && after === before,
-                `http=${res.status} 任务数 ${before}→${after}`);
+            if (on) {
+                check('51. quote_verify 开关启用→file_ids 走任务中心（建任务+失败闭环500）',
+                    res.status === 500 && /任务执行失败/.test(j?.message || '') && after === before + 1,
+                    `http=${res.status} 任务数 ${before}→${after}`);
+            } else {
+                check('51. quote_verify 开关关闭走旧路径（400+不建任务）',
+                    res.status === 400 && /未找到文件数据/.test(j?.message || '') && after === before,
+                    `http=${res.status} 任务数 ${before}→${after}`);
+            }
         }
 
         // 52. review_partner 子绑定 scope 路由（bridge 级）：transaction scope 建任务
@@ -619,8 +660,12 @@ async function main() {
                 `全链=${r1[0]?.status} 事件=${ev[0]?.n} 失败=${r2[0]?.status}/${r2[0]?.error_code}`);
         }
 
-        // 58. XO 专项C 路由级：product-selection/chat（Dify 地址无效 → 外层 catch 失败收口）
+        // 58. XO 专项C 路由级：product-selection/chat 跟踪收口
+        //     断言随 Dify 凭据配置分支 —— 已配置→任务建出+异常失败收口；未配置→503 守卫且不建任务。
         {
+            const configured = difyConfigured('product_selection');
+            const { rowCount: before } = await pool.query(
+                `SELECT 1 FROM tasks WHERE skill_key='product_selection'`);
             const res = await fetch(`${BASE}/api/product-selection/chat`, {
                 method: 'POST',
                 headers: { Authorization: `Bearer ${ALICE_TOKEN}`, 'content-type': 'application/json' },
@@ -628,9 +673,17 @@ async function main() {
             });
             const { rows: t } = await pool.query(
                 `SELECT status, error_code FROM tasks WHERE skill_key='product_selection' ORDER BY created_at DESC LIMIT 1`);
-            check('58. product_selection 路由级跟踪（任务建出+异常失败收口）',
-                res.status === 500 && t[0]?.status === 'failed',
-                `http=${res.status} task=${t[0]?.status}/${t[0]?.error_code}`);
+            const { rowCount: after } = await pool.query(
+                `SELECT 1 FROM tasks WHERE skill_key='product_selection'`);
+            if (configured) {
+                check('58. product_selection 路由级跟踪（任务建出+异常失败收口）',
+                    res.status === 500 && t[0]?.status === 'failed' && after === before + 1,
+                    `http=${res.status} task=${t[0]?.status}/${t[0]?.error_code}`);
+            } else {
+                check('58. product_selection Dify 未配置守卫（503+不建任务）',
+                    res.status === 503 && after === before,
+                    `http=${res.status} 任务数 ${before}→${after}`);
+            }
         }
 
     await pool.end();

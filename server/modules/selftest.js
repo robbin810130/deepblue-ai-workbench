@@ -52,7 +52,15 @@ check('启动期校验零警告', report.warnings.length === 0, report.warnings.
 const keys = ALL_SKILLS.map((s) => s.skill_key);
 check('skill_key 全局唯一', new Set(keys).size === keys.length);
 check('skill_key 均为 snake_case', keys.every((k) => /^[a-z][a-z0-9_]*$/.test(k)));
-check('幽灵技能已标记 live:false', ALL_SKILLS.filter((s) => s.live === false).length === 5, `live 共 ${stats.live}/${stats.total}`);
+// 2026-09-19：5 个幽灵技能（meeting_minutes / digital_employee / doc_drafting /
+// rules_assistant / material_quote）已全部开门，注册表应无 live:false 残留。
+// 若再次出现，说明有人新加了未上线的技能 → 属于需要复核的「暗资产」。
+const ghosts = ALL_SKILLS.filter((s) => s.live === false);
+check(
+    '技能注册表无 live:false 暗资产（幽灵技能已开门）',
+    ghosts.length === 0,
+    ghosts.length ? `仍有：${ghosts.map((g) => g.skill_key).join(', ')}` : `live 共 ${stats.live}/${stats.total}`,
+);
 
 // ── 2. 查询能力 ──────────────────────────────────────────────
 const scenes = listScenes();
