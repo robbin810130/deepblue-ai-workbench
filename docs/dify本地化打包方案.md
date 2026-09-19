@@ -97,3 +97,37 @@ DIFY_CONSOLE_EMAIL=... DIFY_CONSOLE_PASSWORD=... \
 1. `scripts/import-dify-dsls.mjs`（现场批量导入 + token 重建 + dataset_ids 重写）
 2. `scripts/export-dify-datasets.mjs`（知识库导出）
 3. 出厂镜像构建（依赖硬件选型，§六 首启流程固化为一键脚本）
+
+---
+
+## 附：v2 实施结果（2026-09-19）
+
+### ① DSL 全量导出 ✅
+- `scripts/export-dify-dsls.mjs` 实测 **55/55 成功**（排除 completion 模式 1 个）→ `dify-bundle/dsls/`
+- Dify 1.14 鉴权坑：登录密码字段需 **base64**（`FieldEncryption` 仅 base64 解码），token 走 httpOnly Cookie + `X-CSRF-Token` 头（不是 Bearer，头名带连字符）；导出端点为 `GET /apps/<id>/export?include_secret=false` 返回 JSON `{data: <yaml>}`（不是 /export/download）。
+
+### ② 绑定 ↔ 应用映射（`scripts/gen-binding-map.mjs` → `dify-bundle/binding-map.json`）
+| 置信度 | 数量 | 说明 |
+|---|---|---|
+| verified | 32 | env 真实值与 api_tokens/dataset-token 精确吻合（源：deepblue .env + 旧 webos 时代 `Dify智能体/dify/.env`） |
+| draft-high | 3 | 语义别名推定（product_entry←BRAND_EXTRACT、internal←WORKFLOW），待确认 |
+| non-dify | 2 | ai_image（火山方舟）、video_gen |
+| 未映射 | 10 | review_partner×4、bid_assistant、enterprise_qualification、product_selection、product_library、invoice_verify、logistics_fee —— 老服务器上 env 值为空/PLACEHOLDER，真实 key **只在 Windows 生产 .env**（webos 生产跑在 Windows pm2，见 ecosystem.config.cjs），需老大提供 |
+
+- 对账结论：9 个未认领 token 全部是 test/copy/停用应用，无泄漏风险；知识检索类绑定共用**唯一租户级 dataset token**（`dataset-ugmr...`），dataset 以 ID 引用（`DIFY_*_DATASET_ID`），现场导入后需重写。
+
+### ③ 知识库清单（15 个，待圈定随设备范围）
+| 知识库 | 文档数 | 字数 | 备注 |
+|---|---|---|---|
+| 深蓝智能公司制度 | 21 | 3.7万 | 正式 |
+| 看板业务示例库 | 9 | 976万 | 正式（最大） |
+| 物料编码.xlsx | 1/12 | 15.6万 | 正式 + 作废版 |
+| 物料纠错记忆库 | 6 | 515 | 正式 |
+| 法规test | 6 | 10.2万 | 测试 |
+| 智能研发演示test | 4×2 | 2千 | 测试+作废 |
+| 平台格式规范test | 1×2 | 339 | 测试+作废 |
+| 东南亚美妆本地化词典test | 1×2 | 1073 | 测试+作废 |
+| 东南亚文化营销规则test | 1×2 | 330 | 测试+作废 |
+| 知识库导入自动分段test | 0 | 0 | 空库 |
+
+全部 high_quality + 通义 multimodal-embedding-v1 → 打包必须含 tongyi 插件与 embedding 凭据。

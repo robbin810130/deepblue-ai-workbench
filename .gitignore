@@ -107,3 +107,4 @@ dify-bundle/app-inventory.json
 dify-bundle/dsls/
 dify-bundle/datasets/
 dify-bundle/binding-map.json
+dify-bundle/dataset-tokens.tsv

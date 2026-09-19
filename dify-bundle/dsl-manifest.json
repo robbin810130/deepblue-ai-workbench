@@ -1,0 +1,394 @@
+{
+  "base": "http://localhost:8088",
+  "total": 55,
+  "ok": 55,
+  "fail": 0,
+  "exported_at": "2026-09-19T11:36:14.036Z",
+  "apps": [
+    {
+      "app_id": "32a15e80-28fe-4ea7-b948-4f149605adea",
+      "name": "经营分析看板_SQLiteAgent_Test",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/01-经营分析看板_SQLiteAgent_Test.yml",
+      "exported_at": "2026-09-19T11:35:54.627Z"
+    },
+    {
+      "app_id": "1c035556-5a39-49f3-8c4f-dd5ce0a8fe4a",
+      "name": "业务数据分析助手",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/02-业务数据分析助手.yml",
+      "exported_at": "2026-09-19T11:35:54.990Z"
+    },
+    {
+      "app_id": "1471ce7f-682f-4625-9611-e5979526034a",
+      "name": "财务侧-发票上传与校验 大模型版本",
+      "mode": "workflow",
+      "dsl_file": "dsls/03-财务侧-发票上传与校验_大模型版本.yml",
+      "exported_at": "2026-09-19T11:35:55.334Z"
+    },
+    {
+      "app_id": "8cfe6f58-2c51-4fd2-bef6-ad7f76af6aaf",
+      "name": "财务侧-发票上传与校验 内部版本",
+      "mode": "workflow",
+      "dsl_file": "dsls/04-财务侧-发票上传与校验_内部版本.yml",
+      "exported_at": "2026-09-19T11:35:55.693Z"
+    },
+    {
+      "app_id": "07ee3fa5-1a0f-4bf4-bfa1-f2841e304b63",
+      "name": "出行搭子运营数据合并（广告-专区-We分析）",
+      "mode": "workflow",
+      "dsl_file": "dsls/05-出行搭子运营数据合并（广告-专区-We分析）.yml",
+      "exported_at": "2026-09-19T11:35:56.038Z"
+    },
+    {
+      "app_id": "57bb94f7-7661-4770-9a84-49ff65fbadea",
+      "name": "大客户档案",
+      "mode": "workflow",
+      "dsl_file": "dsls/06-大客户档案.yml",
+      "exported_at": "2026-09-19T11:35:56.367Z"
+    },
+    {
+      "app_id": "31c01af3-915e-4b0f-81d0-6b21ff2d0b96",
+      "name": "点餐聚合页数据整理",
+      "mode": "workflow",
+      "dsl_file": "dsls/07-点餐聚合页数据整理.yml",
+      "exported_at": "2026-09-19T11:35:56.700Z"
+    },
+    {
+      "app_id": "d89c5d5d-0501-4f52-9509-96dd0d094736",
+      "name": "交易情况数据整理",
+      "mode": "workflow",
+      "dsl_file": "dsls/08-交易情况数据整理.yml",
+      "exported_at": "2026-09-19T11:35:57.030Z"
+    },
+    {
+      "app_id": "c7800ec9-51e4-4471-b27d-53701cfdf5aa",
+      "name": "日常标讯检索",
+      "mode": "workflow",
+      "dsl_file": "dsls/09-日常标讯检索.yml",
+      "exported_at": "2026-09-19T11:35:57.360Z"
+    },
+    {
+      "app_id": "91064583-4df8-4648-b7cc-a93c94fe168b",
+      "name": "小程序访问情况数据整理",
+      "mode": "workflow",
+      "dsl_file": "dsls/10-小程序访问情况数据整理.yml",
+      "exported_at": "2026-09-19T11:35:57.705Z"
+    },
+    {
+      "app_id": "0548232a-3ad0-468e-a0fb-014ff6ae005f",
+      "name": "选品工作流",
+      "mode": "workflow",
+      "dsl_file": "dsls/11-选品工作流.yml",
+      "exported_at": "2026-09-19T11:35:58.046Z"
+    },
+    {
+      "app_id": "6e8cb30b-1a52-4122-9d72-c6fa4fd30f2b",
+      "name": "中标结果查询",
+      "mode": "workflow",
+      "dsl_file": "dsls/12-中标结果查询.yml",
+      "exported_at": "2026-09-19T11:35:58.370Z"
+    },
+    {
+      "app_id": "9b910abb-4ac3-4f9d-b62f-d23544da5528",
+      "name": "物料匹配&报价审核_0818copy",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/13-物料匹配_报价审核_0818copy.yml",
+      "exported_at": "2026-09-19T11:35:58.747Z"
+    },
+    {
+      "app_id": "a479b1f5-798f-468b-80c8-337af843a467",
+      "name": "物料匹配&报价审核_0818",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/14-物料匹配_报价审核_0818.yml",
+      "exported_at": "2026-09-19T11:35:59.124Z"
+    },
+    {
+      "app_id": "c5ce8150-f50e-460c-9bc9-7c376eb01879",
+      "name": "物料人工查询_0727",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/15-物料人工查询_0727.yml",
+      "exported_at": "2026-09-19T11:35:59.473Z"
+    },
+    {
+      "app_id": "8e1df6f3-9aa6-4114-9a18-ec190657c29a",
+      "name": "测试联网搜索",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/16-测试联网搜索.yml",
+      "exported_at": "2026-09-19T11:35:59.822Z"
+    },
+    {
+      "app_id": "2ade5c3f-14bf-4e90-a34f-e4a573959882",
+      "name": "图片隐患检测__0724",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/17-图片隐患检测__0724.yml",
+      "exported_at": "2026-09-19T11:36:00.169Z"
+    },
+    {
+      "app_id": "385a0411-aa0c-4ae9-ac81-d4de8416c403",
+      "name": "物料匹配&报价审核_0723copy",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/18-物料匹配_报价审核_0723copy.yml",
+      "exported_at": "2026-09-19T11:36:00.539Z"
+    },
+    {
+      "app_id": "75859fdc-2e26-40d1-9801-36125ec2273a",
+      "name": "图片隐患检测",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/19-图片隐患检测.yml",
+      "exported_at": "2026-09-19T11:36:00.878Z"
+    },
+    {
+      "app_id": "fb557ba4-9215-4cc6-afdb-c2235fa6c1dd",
+      "name": "深蓝AI_商品月度/季度销售分析",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/20-深蓝AI_商品月度_季度销售分析.yml",
+      "exported_at": "2026-09-19T11:36:01.227Z"
+    },
+    {
+      "app_id": "e2bcc86f-ec58-4cc0-8cfa-7dab2d64541f",
+      "name": "订单识别",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/21-订单识别.yml",
+      "exported_at": "2026-09-19T11:36:01.580Z"
+    },
+    {
+      "app_id": "67fd8e99-a4e6-4bca-9ec2-77a4fa72e97a",
+      "name": "视频脚本生成",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/22-视频脚本生成.yml",
+      "exported_at": "2026-09-19T11:36:01.929Z"
+    },
+    {
+      "app_id": "f16deb84-51ee-4e94-a877-6f52ce961d81",
+      "name": "数字员工",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/23-数字员工.yml",
+      "exported_at": "2026-09-19T11:36:02.311Z"
+    },
+    {
+      "app_id": "f51d53a9-9d8e-4d6f-9797-22d5c5d54a48",
+      "name": "批量整理客户名称特征映射",
+      "mode": "workflow",
+      "dsl_file": "dsls/24-批量整理客户名称特征映射.yml",
+      "exported_at": "2026-09-19T11:36:02.654Z"
+    },
+    {
+      "app_id": "9c71190a-f78b-4736-8a71-98d5cbef9ad0",
+      "name": "配方风险检测",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/25-配方风险检测.yml",
+      "exported_at": "2026-09-19T11:36:03.022Z"
+    },
+    {
+      "app_id": "5506f1c5-fba2-4804-abb2-e8172caa41fd",
+      "name": "电商风险检测",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/26-电商风险检测.yml",
+      "exported_at": "2026-09-19T11:36:03.380Z"
+    },
+    {
+      "app_id": "55eb06a9-f4f6-4dd0-a964-ec12309e0d24",
+      "name": "法规text转Markdown",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/27-法规text转Markdown.yml",
+      "exported_at": "2026-09-19T11:36:03.724Z"
+    },
+    {
+      "app_id": "604dbc3a-9591-4846-808f-622462410ff4",
+      "name": "文件转Markdown工具",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/28-文件转Markdown工具.yml",
+      "exported_at": "2026-09-19T11:36:04.162Z"
+    },
+    {
+      "app_id": "5bc0d98d-92ff-4a6f-9d9f-d524aacc55e5",
+      "name": "文档起草",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/29-文档起草.yml",
+      "exported_at": "2026-09-19T11:36:04.519Z"
+    },
+    {
+      "app_id": "5e5f5f6d-2f23-4089-ac28-64281dd33c7e",
+      "name": "会议纪要Markdown转docx",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/30-会议纪要Markdown转docx.yml",
+      "exported_at": "2026-09-19T11:36:04.849Z"
+    },
+    {
+      "app_id": "6a3a8c4c-f8f2-42a4-8add-df3d22e552fa",
+      "name": "会议纪要",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/31-会议纪要.yml",
+      "exported_at": "2026-09-19T11:36:05.193Z"
+    },
+    {
+      "app_id": "d5492908-367e-4831-8fe7-d7d15b7a9f48",
+      "name": "资质识别入库",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/32-资质识别入库.yml",
+      "exported_at": "2026-09-19T11:36:05.560Z"
+    },
+    {
+      "app_id": "83fa188c-d263-470d-8aa0-aaf945793f51",
+      "name": "批量产品名提取品牌自动入库",
+      "mode": "workflow",
+      "dsl_file": "dsls/33-批量产品名提取品牌自动入库.yml",
+      "exported_at": "2026-09-19T11:36:05.920Z"
+    },
+    {
+      "app_id": "8c830313-f624-4d7a-b804-ae437221ad10",
+      "name": "深蓝AI_历史营销分析",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/34-深蓝AI_历史营销分析.yml",
+      "exported_at": "2026-09-19T11:36:06.314Z"
+    },
+    {
+      "app_id": "355b5f76-d654-4622-b5f8-98eda55a75b3",
+      "name": "物料匹配&报价审核_0327copy",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/35-物料匹配_报价审核_0327copy.yml",
+      "exported_at": "2026-09-19T11:36:06.662Z"
+    },
+    {
+      "app_id": "ae970193-80b0-424b-bc10-5d9649fc1952",
+      "name": "物料匹配&报价审核",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/36-物料匹配_报价审核.yml",
+      "exported_at": "2026-09-19T11:36:07.008Z"
+    },
+    {
+      "app_id": "de0f597a-3959-4f38-ae29-f656eb7b872b",
+      "name": "深蓝AI_公司制度Q＆A_0325copy",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/37-深蓝AI_公司制度Q＆A_0325copy.yml",
+      "exported_at": "2026-09-19T11:36:07.361Z"
+    },
+    {
+      "app_id": "39720677-543c-4114-9906-f9f1642ad9ab",
+      "name": "深蓝AI_美妆智能研发",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/38-深蓝AI_美妆智能研发.yml",
+      "exported_at": "2026-09-19T11:36:07.704Z"
+    },
+    {
+      "app_id": "eedbf1d7-eeb6-4551-8cfb-bb7a484be745",
+      "name": "深蓝AI_品牌出海本地化营销内容生成",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/39-深蓝AI_品牌出海本地化营销内容生成.yml",
+      "exported_at": "2026-09-19T11:36:08.054Z"
+    },
+    {
+      "app_id": "609659d3-8824-461d-b7d2-55424d699f62",
+      "name": "深蓝AI_每日新闻资讯获取",
+      "mode": "workflow",
+      "dsl_file": "dsls/40-深蓝AI_每日新闻资讯获取.yml",
+      "exported_at": "2026-09-19T11:36:08.441Z"
+    },
+    {
+      "app_id": "580c7a68-477e-4ac7-8f7b-5984e128a84c",
+      "name": "深蓝AI_合同审批",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/41-深蓝AI_合同审批.yml",
+      "exported_at": "2026-09-19T11:36:08.780Z"
+    },
+    {
+      "app_id": "73d3d10a-5139-40c5-876e-86d32d6aab21",
+      "name": "深蓝AI_市场洞察/爆款分析",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/42-深蓝AI_市场洞察_爆款分析.yml",
+      "exported_at": "2026-09-19T11:36:09.137Z"
+    },
+    {
+      "app_id": "e5899902-a788-4250-ba63-a4a14bc1e719",
+      "name": "深蓝AI_版式对比",
+      "mode": "workflow",
+      "dsl_file": "dsls/43-深蓝AI_版式对比.yml",
+      "exported_at": "2026-09-19T11:36:09.485Z"
+    },
+    {
+      "app_id": "9afac792-d709-4b54-8117-c9749dfa3525",
+      "name": "深蓝AI_每日新闻资讯获取_停用",
+      "mode": "workflow",
+      "dsl_file": "dsls/44-深蓝AI_每日新闻资讯获取_停用.yml",
+      "exported_at": "2026-09-19T11:36:09.839Z"
+    },
+    {
+      "app_id": "4fa581b2-6b11-4109-a413-cde704b2e60a",
+      "name": "深蓝AI_新闻解析",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/45-深蓝AI_新闻解析.yml",
+      "exported_at": "2026-09-19T11:36:10.186Z"
+    },
+    {
+      "app_id": "a6d05f11-6a28-40c0-9385-d41e1dc16515",
+      "name": "深蓝AI_定时触发新闻",
+      "mode": "workflow",
+      "dsl_file": "dsls/46-深蓝AI_定时触发新闻.yml",
+      "exported_at": "2026-09-19T11:36:10.535Z"
+    },
+    {
+      "app_id": "5bc5f73f-87ed-4bb6-aa17-5523e2075099",
+      "name": "深蓝AI_公司制度Q＆A_记忆",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/47-深蓝AI_公司制度Q＆A_记忆.yml",
+      "exported_at": "2026-09-19T11:36:10.869Z"
+    },
+    {
+      "app_id": "d3e98620-0cbd-4ebb-a34c-e09ef553b2e7",
+      "name": "深蓝AI_分组策略/单客户深度分析",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/48-深蓝AI_分组策略_单客户深度分析.yml",
+      "exported_at": "2026-09-19T11:36:11.224Z"
+    },
+    {
+      "app_id": "c75ecadb-acfa-4555-a631-19ba6f9136f8",
+      "name": "深蓝AI_商品月度/季度销售预测",
+      "mode": "agent-chat",
+      "dsl_file": "dsls/49-深蓝AI_商品月度_季度销售预测.yml",
+      "exported_at": "2026-09-19T11:36:11.549Z"
+    },
+    {
+      "app_id": "c6b0b91e-56c4-45b3-8ce8-0727317dae76",
+      "name": "深蓝AI_爆款分析",
+      "mode": "workflow",
+      "dsl_file": "dsls/50-深蓝AI_爆款分析.yml",
+      "exported_at": "2026-09-19T11:36:11.903Z"
+    },
+    {
+      "app_id": "35516efb-6edd-43fd-9bd8-bf40d98d2ee7",
+      "name": "深蓝AI_商品月度/季度销售预测",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/51-深蓝AI_商品月度_季度销售预测.yml",
+      "exported_at": "2026-09-19T11:36:12.250Z"
+    },
+    {
+      "app_id": "bfbd5a88-ff19-47d4-8769-320f793dde1c",
+      "name": "深蓝AI_客户分析",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/52-深蓝AI_客户分析.yml",
+      "exported_at": "2026-09-19T11:36:12.601Z"
+    },
+    {
+      "app_id": "1f5d5943-d328-4ed0-8120-00902c318769",
+      "name": "深蓝AI_市场洞察",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/53-深蓝AI_市场洞察.yml",
+      "exported_at": "2026-09-19T11:36:13.042Z"
+    },
+    {
+      "app_id": "b6f2f2d4-b0b0-4a59-a5e0-308af09fd3d5",
+      "name": "用户分析test",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/54-用户分析test.yml",
+      "exported_at": "2026-09-19T11:36:13.392Z"
+    },
+    {
+      "app_id": "df1a5244-899b-4c34-bf91-a67e8d0588c1",
+      "name": "test",
+      "mode": "advanced-chat",
+      "dsl_file": "dsls/55-test.yml",
+      "exported_at": "2026-09-19T11:36:13.734Z"
+    }
+  ]
+}
