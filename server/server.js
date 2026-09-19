@@ -12,6 +12,10 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
 import winston from 'winston';
+import { logger } from './infra/logger.js'; // XO-01 拆解：logger 迁出
+import { authenticateToken } from './infra/auth.js'; // XO-01 拆解：JWT 鉴权迁出
+import { logAudit } from './infra/audit.js'; // XO-01 拆解：审计迁出
+import { register as registerVideogen } from './routes/videogen.js'; // XO-01 拆解：视频生成路由迁出
 import pool from './db.js';  // PostgreSQL 连接池
 import userAdminRoutes from './userAdminRoutes.js'; // 用户管理路由
 import configAdminRoutes from './configAdminRoutes.js'; // 系统配置中心路由
@@ -53,22 +57,7 @@ const envBool = (key, defaultVal = true) => {
 const isUserStop = (msg) => msg?.includes('User requested stop') || msg?.includes('Aborted');
 // ===========================================================
 
-const logger = winston.createLogger({
-    level: 'info',
-    format: winston.format.combine(
-        winston.format.timestamp({
-            format: () => new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 23)
-        }),
-        winston.format.printf(({ timestamp, level, message, stack }) => {
-            return `[${timestamp}] ${level.toUpperCase()}: ${stack || message}`;
-        })
-    ),
-    transports: [
-        new winston.transports.File({ filename: 'logs/error.log', level: 'error' }),
-        new winston.transports.File({ filename: 'logs/combined.log' }),
-        new winston.transports.Console()
-    ],
-});
+// logger 已迁至 server/infra/logger.js（XO-01）
 
 process.on('uncaughtException', (err) => {
     logger.error('Uncaught Exception', err);
@@ -116,7 +105,7 @@ app.use(cors({
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ limit: '100mb', extended: true }));
 
-const JWT_SECRET = process.env.JWT_SECRET || 'blue-os-super-secret-key';
+// JWT_SECRET 与 authenticateToken 已迁至 server/infra/auth.js（XO-01）
 const DSH_ACCESS_COOKIE = 'blue_os_dsh_access';
 const DSH_ACCESS_TTL_MS = 10 * 60 * 1000;
 
@@ -176,49 +165,7 @@ const normalizeIp = (ip) => {
 };
 
 // 鉴权中间件
-const authenticateToken = async (req, res, next) => {
-    // 诊改优化：放行 OPTIONS 预检请求及特定路径，解决直连 3001 时的跨域鉴权问题
-    // 特别说明：/api/auth/logout-beacon 必须放行，因为 sendBeacon 无法携带 Authorization Header
-    if (req.method === 'OPTIONS' || req.path === '/api/auth/login' || req.path === '/api/auth/logout-beacon' || req.path === '/api/health' || req.path === '/api/business-dashboard/publish' || req.path === '/api/v1/files/download') {
-        // /api/business-dashboard/publish 由路由内部 X-Internal-Token 鉴权（Dify 服务端调用，无平台 JWT）
-        // /api/v1/files/download 为短时签名 URL 下载（HMAC+有效期即凭证，PRD 05 §9），路由内部自行校验签名
-        return next();
-    }
-
-    const isApiRequest = req.path.startsWith('/api/');
-    const isSensitiveJson = req.path === '/sales_analysis_matrix.json' || req.path === '/monthly_forecast_baseline.json';
-
-    if (isApiRequest || isSensitiveJson) {
-        const authHeader = req.headers['authorization'];
-        const token = authHeader && authHeader.split(' ')[1];
-        if (!token) return res.status(401).json({ success: false, message: '未提供访问令牌，请先登录' });
-
-        let decoded;
-        try {
-            decoded = jwt.verify(token, JWT_SECRET);
-        } catch (err) {
-            return res.status(403).json({ success: false, message: '令牌无效或已过期' });
-        }
-
-        // 若 Token 带 jti，检查会话是否被吊销
-        if (decoded.jti) {
-            try {
-                const sess = await pool.query(
-                    'SELECT revoked FROM sys_user_sessions WHERE jti = $1',
-                    [decoded.jti]
-                );
-                if (sess.rowCount > 0 && sess.rows[0].revoked) {
-                    return res.status(401).json({ success: false, message: '会话已在其他设备退出，请重新登录' });
-                }
-            } catch (_) { /* 查询失败时不阻断，降级通过 */ }
-        }
-
-        req.user = decoded;
-        next();
-    } else {
-        next();
-    }
-};
+// authenticateToken 已迁至 server/infra/auth.js（XO-01）
 
 // 静态资源先行（允许 DashScope 匿名下载音频）
 app.use('/uploads', express.static(path.join(__dirname, '../public/uploads')));
@@ -1742,31 +1689,7 @@ const fixUploadedFileName = (name) => {
 };
 
 // ── 操作审计日志记录工具 ──
-async function logAudit(req, { module, action, target_data, details, status = 'SUCCESS' }) {
-    try {
-        if (!req) req = {};
-        const user = req.user || {}; // 从 authenticateToken 获取
-        const ip = req.headers?.['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || '';
-        const ua = req.headers?.['user-agent'] || '';
-        await pool.query(
-            `INSERT INTO sys_audit_logs (user_id, username, module, action, target_data, details, status, ip_address, user_agent) 
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-            [
-                user.id || user.userId || null,
-                user.username || 'ANONYMOUS',
-                module,
-                action,
-                target_data ? (typeof target_data === 'string' ? target_data : JSON.stringify(target_data)) : '',
-                details ? (typeof details === 'string' ? details : JSON.stringify(details)) : '',
-                status,
-                ip,
-                ua
-            ]
-        );
-    } catch (err) {
-        logger.error('[AuditLog Error] ' + err.message);
-    }
-}
+// logAudit 已迁至 server/infra/audit.js（XO-01）
 // 将工具挂载到 app 上，方便在 userAdminRoutes.js 等分发路由中使用
 app.set('logAudit', logAudit);
 
@@ -8065,149 +7988,8 @@ app.delete('/api/notifications', authenticateToken, async (req, res) => {
 // ============================================================
 // ■ 视频生成模块：B站分析 + Dify分镜生成
 // ============================================================
-app.post('/api/videogen/generate', authenticateToken, async (req, res) => {
-    const { query } = req.body;
-    if (!query || !query.trim()) {
-        return res.status(400).json({ success: false, message: '请提供视频生成需求描述' });
-    }
-
-    const apiKey = process.env.DIFY_VIDEOGEN_API_KEY;
-    const apiUrl = process.env.DIFY_VIDEOGEN_API_URL;
-
-    if ((!apiKey || apiKey === 'app-xxxxxxxxxxxxxxxxxxxxxxxx') && !legacyBridge.isPilotSkill('video_gen')) {
-        return res.status(500).json({ success: false, message: '请先在 .env 中配置 DIFY_VIDEOGEN_API_KEY' });
-    }
-
-    const rpaScriptPath = path.join(__dirname, '../RPA/bilibili_search_drission.py');
-    const resultsJsonPath = path.join(__dirname, '../RPA/bilibili_detailed_results.json');
-
-    // ── 步骤 1：执行 bilibili_search_drission.py ──
-    logger.info(`[VideoGen] 开始执行 RPA 脚本，关键词：${query}`);
-    try {
-        await new Promise((resolve, reject) => {
-            const pythonProcess = spawn('python', [rpaScriptPath], {
-                env: { ...process.env, PYTHONIOENCODING: 'utf-8' },
-                cwd: path.join(__dirname, '../RPA')
-            });
-
-            let stderr = '';
-            pythonProcess.stderr.on('data', (data) => {
-                stderr += data.toString();
-            });
-            pythonProcess.on('close', (code) => {
-                if (code !== 0) {
-                    logger.error(`[VideoGen RPA] 脚本退出码: ${code}, stderr: ${stderr}`);
-                    // 非零退出码时仍尝试继续（结果文件可能已部分生成）
-                }
-                resolve(null);
-            });
-            pythonProcess.on('error', (err) => {
-                reject(new Error(`RPA 脚本启动失败: ${err.message}`));
-            });
-        });
-    } catch (rpaErr) {
-        logger.error('[VideoGen] RPA 启动失败: ' + rpaErr.message);
-        return res.status(500).json({ success: false, message: `RPA 脚本执行失败: ${rpaErr.message}` });
-    }
-
-    // ── 步骤 2：读取 bilibili_detailed_results.json ──
-    let bilibiliData = [];
-    try {
-        if (fs.existsSync(resultsJsonPath)) {
-            const raw = fs.readFileSync(resultsJsonPath, 'utf-8');
-            bilibiliData = JSON.parse(raw);
-            logger.info(`[VideoGen] 读取到 B站分析结果 ${bilibiliData.length} 条`);
-        } else {
-            logger.warn('[VideoGen] bilibili_detailed_results.json 不存在，将以空数据继续调用 Dify');
-        }
-    } catch (parseErr) {
-        logger.warn('[VideoGen] 解析 bilibili_detailed_results.json 失败: ' + parseErr.message);
-    }
-
-    // 构建传给 Dify 的上下文：取前3条视频的核心信息
-    const contextSnippet = bilibiliData.slice(0, 3).map((item, i) => {
-        return `【热门视频${i + 1}】标题：${item.title || ''}，简介：${(item.description || '').slice(0, 100)}，AI总结：${(item.ai_summary || '').slice(0, 200)}`;
-    }).join('\n');
-
-    const difyQuery = `用户需求：${query}\n\nB站热门视频参考数据：\n${contextSnippet || '（暂无参考数据，请根据需求直接生成）'}\n\n请根据以上信息生成5个分镜脚本，以JSON数组返回。`;
-
-    // ── 步骤 3：调用 Dify Chatflow ──
-    logger.info('[VideoGen] 开始调用 Dify Chatflow...');
-    let rawAnswer = '';
-    try {
-        // ── D4 试点迁移（TASK_CENTER_PILOT 含 video_gen 时启用）──────────
-        // RPA 采集（步骤1-2）留在路由内（属输入采集）；仅 Dify 分镜生成走任务中心闭环。
-        if (legacyBridge.isPilotSkill('video_gen')) {
-            try {
-                const r = await legacyBridge.runThroughTaskCenter({
-                    skillKey: 'video_gen',
-                    title: `视频分镜：${String(query).slice(0, 24)}`,
-                    user: req.user,
-                    inputs: { query: difyQuery },
-                });
-                if (!r.ok) {
-                    logger.error(`[VideoGen-任务中心] ${r.taskNo} 失败 ${r.errorCode}: ${r.message}`);
-                    return res.status(500).json({ success: false, message: `AI 分镜生成失败: 任务执行失败（${r.taskNo}）：${r.message}` });
-                }
-                rawAnswer = legacyBridge.stripThinkTags(legacyBridge.extractAnswer(r.outputs)) || '';
-            } catch (e) {
-                logger.error('[VideoGen-任务中心] 异常: ' + e.message);
-                return res.status(500).json({ success: false, message: `AI 分镜生成失败: ${e.message}` });
-            }
-        } else {
-        const difyRes = await fetch(apiUrl, {
-            method: 'POST',
-            headers: {
-                'Authorization': `Bearer ${apiKey}`,
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                inputs: {},
-                query: difyQuery,
-                response_mode: 'blocking',
-                user: req.user?.username || 'system-user'
-            })
-        });
-
-        const difyData = await difyRes.json();
-        if (!difyRes.ok) {
-            throw new Error(`Dify 调用失败: ${difyData.message || JSON.stringify(difyData)}`);
-        }
-        rawAnswer = difyData.answer || '';
-        logger.info(`[VideoGen] Dify 返回成功，answer 长度: ${rawAnswer.length}`);
-        }
-    } catch (difyErr) {
-        logger.error('[VideoGen] Dify 调用失败: ' + difyErr.message);
-        return res.status(500).json({ success: false, message: `AI 分镜生成失败: ${difyErr.message}` });
-    }
-
-    // ── 步骤 4：解析 Dify 返回的 JSON 数组 ──
-    let scenes = [];
-    try {
-        // 尝试从 answer 中提取 JSON 数组（兼容 Markdown 代码块格式）
-        const jsonMatch = rawAnswer.match(/```json\s*([\s\S]*?)```/) || rawAnswer.match(/(\[[\s\S]*\])/);
-        const jsonStr = jsonMatch ? jsonMatch[1] : rawAnswer;
-        scenes = JSON.parse(jsonStr.trim());
-        if (!Array.isArray(scenes)) throw new Error('返回格式不是数组');
-    } catch (parseErr) {
-        logger.error('[VideoGen] 解析 Dify 返回 JSON 失败: ' + parseErr.message + '\n原始内容: ' + rawAnswer.slice(0, 500));
-        return res.status(500).json({ success: false, message: 'AI 返回格式解析失败，请检查 Dify 配置确保输出标准 JSON 数组' });
-    }
-
-    // ── 步骤 5：映射为前端 StoryboardCard 格式 ──
-    const storyboards = scenes.map((scene) => ({
-        id: Math.random().toString(36).substring(2, 9),
-        description: scene.scene_description || '',
-        script: scene.narration || '',
-        imagePrompt: scene.image_prompt || '',
-        cameraPrompt: scene.video_motion_prompt || '',
-        imageStatus: 'idle',
-        imageUrl: ''
-    }));
-
-    logger.info(`[VideoGen] 成功生成 ${storyboards.length} 个分镜`);
-    res.json({ success: true, storyboards });
-});
+// 视频生成路由已迁至 server/routes/videogen.js（XO-01，首个示范模块）
+registerVideogen(app, { authenticateToken, logger });
 
 // ============================================================
 // ■ 招标检索模块路由
