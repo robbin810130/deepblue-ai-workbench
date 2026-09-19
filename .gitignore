@@ -108,3 +108,8 @@ dify-bundle/dsls/
 dify-bundle/datasets/
 dify-bundle/binding-map.json
 dify-bundle/dataset-tokens.tsv
+dify-bundle/.env.generated
+# 本地补签的凭据（含 API Key，由 scripts/provision-local-dify.mjs 生成）
+dify-bundle/local-overrides.json
+# LLM 节点 provider/model 纠错记录（环境相关，由 scripts/fix-dify-model-providers.mjs 生成）
+dify-bundle/model-provider-fixes.json

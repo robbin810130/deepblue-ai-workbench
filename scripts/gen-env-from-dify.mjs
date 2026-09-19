@@ -12,6 +12,9 @@
  *   3. dify-bundle/app-inventory.json         —— 应用清单（含 api_tokens 与 mode）
  *   4. dify-bundle/dataset-tokens.tsv         —— 租户级 dataset token（知识检索类共用）
  *   5. ../../dify/.env                        —— 源生产 env（用于在「一个应用多把 token」时选定正确那把）
+ *   6. dify-bundle/local-overrides.json       —— 本地 Dify 补齐的凭据（优先级最高）
+ *      源生产为空的绑定，本地若有对应应用（且已发布）则由 provision-local-dify.mjs 签发，
+ *      覆盖 binding-map 的 inactive/unmapped 判定 —— 让这些技能在本地可跑。
  *
  * 产物：
  *   - dify-bundle/.env.generated              可直接覆盖 .env 的完整内容
@@ -62,6 +65,18 @@ const DATASET_TOKEN = (() => {
 
 const mapByKey = new Map(bindingMap.bindings.map((b) => [b.binding_key, b]));
 
+/** 本地 Dify 补齐的凭据（源生产为空、本地有应用）：优先级最高 */
+const localOverrides = (() => {
+    const p = path.join(BUNDLE, 'local-overrides.json');
+    if (!fs.existsSync(p)) return new Map();
+    try {
+        const j = readJson(p);
+        return new Map(Object.entries(j.bindings || {}).map(([k, v]) => [k, {
+            id: v.app_id, name: v.app_name, mode: v.mode, _token: v.token, _note: v.note, _risk: v.risk,
+        }]));
+    } catch { return new Map(); }
+})();
+
 /** 别名：源生产 env 里绑定的值挂在别的变量名下（命名演化） */
 const KEY_ENV_ALIASES = {
     DIFY_DOC_COPYWRITING_API_KEY: ['DIFY_DOC_DRAFTING_API_KEY'],
@@ -77,6 +92,12 @@ const modeKind = (mode) => (mode === 'workflow' ? 'workflow' : 'chat');
 function pickToken(b) {
     const m = mapByKey.get(b.binding_key);
     if (!m) return { token: null, how: 'no-map-entry' };
+
+    // ⓪ 本地补签（源生产为空的绑定，本地已发布应用 + 已签发 token）——最高优先级
+    const ov = localOverrides.get(b.binding_key);
+    if (ov?._token) {
+        return { token: ov._token, how: 'local-override', app: ov };
+    }
 
     // ① dataset token 类（知识检索）
     if (m.match?.via?.includes('dataset-token')) {
@@ -162,6 +183,7 @@ for (const r of rows) {
     if (r.state === 'ready') {
         const appNote = r.app ? `${r.app.name}[${r.app.mode}]` : 'dataset token';
         L.push(`# ${appNote} · endpoint_kind=${b.endpoint_kind}${r.kindMismatch ? ' ⚠️ 与上面应用模式不符！' : ''} · token 取自 ${r.how}`);
+        if (r.app?._risk) L.push(`# ${r.app._risk}`);
         L.push(`${urlName}=${DIFY_BASE}`);
         L.push(`${keyName}=${r.token}`);
     } else {

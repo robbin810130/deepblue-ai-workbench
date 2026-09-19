@@ -365,7 +365,9 @@ router.post('/upload', (req, res, next) => {
                     title: '复盘搭子·主流程数据分析',
                     user: req.user,
                     inputs: {
-                        index_json: JSON.stringify(summaryData),
+                        // ⚠️ 入参名必须是应用 start 节点声明的 summary_json（不是表单字段名 index_json）：
+                        //    传 index_json 会被 Dify 判 400 `summary_json is required in input form`
+                        summary_json: JSON.stringify(summaryData),
                         ad_json: JSON.stringify(adData),
                         zone_json: JSON.stringify(zoneData),
                         we_json: JSON.stringify(materialData),
@@ -385,7 +387,8 @@ router.post('/upload', (req, res, next) => {
         // 触发 DIFY 工作流（传 JSON 字符串）
         const payload = {
             inputs: {
-                index_json: JSON.stringify(summaryData),
+                // 同 pilot 分支：入参名对齐应用声明的 summary_json
+                summary_json: JSON.stringify(summaryData),
                 ad_json: JSON.stringify(adData),
                 zone_json: JSON.stringify(zoneData),
                 we_json: JSON.stringify(materialData)
