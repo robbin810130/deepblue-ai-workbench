@@ -415,6 +415,10 @@ async function main() {
                 no: 49, key: 'risk_detection', path: '/api/risk-detection/rnd/run', auth: true,
                 body: { country: 'US', industry: '美妆', detectionType: 'text', ingredient_text: '冒烟研发风控' },
             },
+            {
+                no: 53, key: 'video_gen', path: '/api/videogen/generate', auth: true,
+                body: { query: '冒烟视频分镜' },
+            },
         ];
         // 造一个暂存文件供 hazard/contract 用
         const staged = await fetch(`${BASE}/api/v1/files/upload`, {

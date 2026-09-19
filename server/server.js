@@ -8074,7 +8074,7 @@ app.post('/api/videogen/generate', authenticateToken, async (req, res) => {
     const apiKey = process.env.DIFY_VIDEOGEN_API_KEY;
     const apiUrl = process.env.DIFY_VIDEOGEN_API_URL;
 
-    if (!apiKey || apiKey === 'app-xxxxxxxxxxxxxxxxxxxxxxxx') {
+    if ((!apiKey || apiKey === 'app-xxxxxxxxxxxxxxxxxxxxxxxx') && !legacyBridge.isPilotSkill('video_gen')) {
         return res.status(500).json({ success: false, message: '请先在 .env 中配置 DIFY_VIDEOGEN_API_KEY' });
     }
 
@@ -8135,6 +8135,26 @@ app.post('/api/videogen/generate', authenticateToken, async (req, res) => {
     logger.info('[VideoGen] 开始调用 Dify Chatflow...');
     let rawAnswer = '';
     try {
+        // ── D4 试点迁移（TASK_CENTER_PILOT 含 video_gen 时启用）──────────
+        // RPA 采集（步骤1-2）留在路由内（属输入采集）；仅 Dify 分镜生成走任务中心闭环。
+        if (legacyBridge.isPilotSkill('video_gen')) {
+            try {
+                const r = await legacyBridge.runThroughTaskCenter({
+                    skillKey: 'video_gen',
+                    title: `视频分镜：${String(query).slice(0, 24)}`,
+                    user: req.user,
+                    inputs: { query: difyQuery },
+                });
+                if (!r.ok) {
+                    logger.error(`[VideoGen-任务中心] ${r.taskNo} 失败 ${r.errorCode}: ${r.message}`);
+                    return res.status(500).json({ success: false, message: `AI 分镜生成失败: 任务执行失败（${r.taskNo}）：${r.message}` });
+                }
+                rawAnswer = legacyBridge.stripThinkTags(legacyBridge.extractAnswer(r.outputs)) || '';
+            } catch (e) {
+                logger.error('[VideoGen-任务中心] 异常: ' + e.message);
+                return res.status(500).json({ success: false, message: `AI 分镜生成失败: ${e.message}` });
+            }
+        } else {
         const difyRes = await fetch(apiUrl, {
             method: 'POST',
             headers: {
@@ -8155,6 +8175,7 @@ app.post('/api/videogen/generate', authenticateToken, async (req, res) => {
         }
         rawAnswer = difyData.answer || '';
         logger.info(`[VideoGen] Dify 返回成功，answer 长度: ${rawAnswer.length}`);
+        }
     } catch (difyErr) {
         logger.error('[VideoGen] Dify 调用失败: ' + difyErr.message);
         return res.status(500).json({ success: false, message: `AI 分镜生成失败: ${difyErr.message}` });

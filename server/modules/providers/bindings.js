@@ -406,7 +406,7 @@ export const BINDINGS = Object.freeze([
         display_name: '视频生成',
         base_url_env: 'DIFY_VIDEOGEN_API_URL',
         api_key_env: 'DIFY_VIDEOGEN_API_KEY',
-        endpoint_kind: 'workflow',
+        endpoint_kind: 'chat', // 旧执行体 chat-messages blocking（2026-09-19 修正）,
         version: '1.0',
         timeout_ms: 600000,
         status: 'active',
