@@ -2232,6 +2232,26 @@ app.post('/api/news/analyze', async (req, res) => {
         // 将当天新闻拼接为字符串供模型参考
         const contextStr = newsContext.map((n, i) => `【${i + 1}】${n.title} (来源: ${n.source || '未知'})`).join('\n\n');
 
+        // ── D4 试点迁移（TASK_CENTER_PILOT 含 daily_news 时启用）──────────
+        if (legacyBridge.isPilotSkill('daily_news')) {
+            try {
+                const r = await legacyBridge.runThroughTaskCenter({
+                    skillKey: 'daily_news',
+                    title: `新闻解析：${String(query || '').slice(0, 24)}`,
+                    user: req.user?.id ? req.user : { id: 0, username: 'news_anonymous', role: 'user' },
+                    inputs: { query: query, news_context: contextStr },
+                });
+                if (!r.ok) {
+                    console.error(`[新闻解析-任务中心] ${r.taskNo} 失败 ${r.errorCode}: ${r.message}`);
+                    return res.status(500).json({ success: false, message: `任务执行失败（${r.taskNo}）：${r.message}` });
+                }
+                return res.json({ success: true, data: legacyBridge.stripThinkTags(legacyBridge.extractAnswer(r.outputs)) });
+            } catch (e) {
+                console.error('[新闻解析-任务中心] 异常:', e.message);
+                return res.status(500).json({ success: false, message: e.message });
+            }
+        }
+
         const response = await fetch(apiUrl, {
             method: 'POST',
             headers: {
@@ -2494,6 +2514,29 @@ app.post('/api/layout-compare/run', async (req, res) => {
 
         if (!leftImageId) {
             return res.status(400).json({ success: false, message: '必须提供至少一张图的文件ID' });
+        }
+
+        // ── D4 试点迁移（TASK_CENTER_PILOT 含 layout_compare 时启用）──────────
+        // 新前端传平台暂存 file_ids；旧 file_id（Dify id）继续走旧直连路径。
+        // ⚠️ 风险：旧 Dify 工作流可能从 inputs.image_a/b 取图而非 sys.files，启用前需真环境确认。
+        if (legacyBridge.isPilotSkill('layout_compare') && Array.isArray(req.body?.file_ids)) {
+            try {
+                const r = await legacyBridge.runThroughTaskCenter({
+                    skillKey: 'layout_compare',
+                    title: `版式对比（${req.body.file_ids.length} 张图）`,
+                    user: req.user?.id ? req.user : { id: 0, username: 'layout_anonymous', role: 'user' },
+                    inputs: { is_single_image: !!isSingle },
+                    files: req.body.file_ids.map(String),
+                });
+                if (!r.ok) {
+                    console.error(`[版式对比-任务中心] ${r.taskNo} 失败 ${r.errorCode}: ${r.message}`);
+                    return res.status(500).json({ success: false, message: `任务执行失败（${r.taskNo}）：${r.message}` });
+                }
+                return res.json({ success: true, data: legacyBridge.stripThinkTags(legacyBridge.extractAnswerText(r.outputs ?? {})) });
+            } catch (e) {
+                console.error('[版式对比-任务中心] 异常:', e.message);
+                return res.status(500).json({ success: false, message: e.message });
+            }
         }
 
         const apiKey = process.env.DIFY_LAYOUT_COMPARE_API_KEY;
@@ -4658,6 +4701,33 @@ app.post('/api/risk-detection/ecommerce/run', authenticateToken, async (req, res
         const { country, industry, detectionType, title, description, fileId } = req.body;
         logAudit(req, { module: 'RISK_DETECTION', action: 'RUN_ECOM_RISK', details: { country, industry, detectionType, titleLength: title?.length, hasFile: !!fileId } });
 
+        // ── D4 试点迁移（TASK_CENTER_PILOT 含 risk_detection 时启用）──────────
+        // 文本模式直接接；图片模式需新前端传平台暂存 file_ids（旧 fileId=Dify id 走旧路径）。
+        // 注：研发线（rnd）绑定需 scope→binding 路由支持，本批仅接电商线。
+        if (legacyBridge.isPilotSkill('risk_detection')
+            && (detectionType !== 'image' || Array.isArray(req.body?.file_ids))) {
+            try {
+                const q = title ? `检测标题：${title}\n描述：${description || ''}` : (description || '请开始执行合规风险检测任务。');
+                const inputs = { query: q, country: country || '', industry: industry || '' };
+                if (detectionType === 'text') { inputs.title = title || ''; inputs.description = description || ''; }
+                const r = await legacyBridge.runThroughTaskCenter({
+                    skillKey: 'risk_detection',
+                    title: `电商风险检测：${String(title || description || '图片检测').slice(0, 24)}`,
+                    user: req.user?.id ? req.user : { id: 0, username: 'risk_anonymous', role: 'user' },
+                    inputs,
+                    files: detectionType === 'image' ? req.body.file_ids.map(String) : [],
+                });
+                if (!r.ok) {
+                    console.error(`[电商风控-任务中心] ${r.taskNo} 失败 ${r.errorCode}: ${r.message}`);
+                    return res.status(500).json({ success: false, message: `任务执行失败（${r.taskNo}）：${r.message}` });
+                }
+                return res.json({ success: true, data: legacyBridge.stripThinkTags(legacyBridge.extractAnswer(r.outputs)) });
+            } catch (e) {
+                console.error('[电商风控-任务中心] 异常:', e.message);
+                return res.status(500).json({ success: false, message: e.message });
+            }
+        }
+
         const apiKey = process.env.DIFY_ECOM_RISK_API_KEY;
         let apiUrl = process.env.DIFY_ECOM_RISK_API_URL;
         if (apiUrl && !apiUrl.endsWith('/v1')) apiUrl = `${apiUrl.replace(/\/$/, '')}/v1`;
@@ -6428,6 +6498,32 @@ app.post('/api/smart-match', upload.single('image'), async (req, res) => {
 // ==================== 出海本地化营销内容生成 API ====================
 app.post('/api/sea-marketing/generate', async (req, res) => {
     try {
+// 海外营销（try 入口即拦截：避免未配置 key 时 500 先于试点分支）
+        // ── D4 试点迁移（TASK_CENTER_PILOT 含 sea_marketing 时启用）──────────
+        const sm = req.body || {};
+        if (legacyBridge.isPilotSkill('sea_marketing')) {
+            try {
+                const r = await legacyBridge.runThroughTaskCenter({
+                    skillKey: 'sea_marketing',
+                    title: `出海营销文案：${String(sm.product_name || '').slice(0, 24)}`,
+                    user: req.user?.id ? req.user : { id: 0, username: 'sea_anonymous', role: 'user' },
+                    inputs: {
+                        query: `Target Platform: ${sm.target_platform}`,
+                        product_name: sm.product_name, product_info: sm.product_info, ingredient: sm.ingredient,
+                        target_language: sm.target_language, target_platform: sm.target_platform, marketing_style: sm.marketing_style,
+                    },
+                });
+                if (!r.ok) {
+                    console.error(`[出海营销-任务中心] ${r.taskNo} 失败 ${r.errorCode}: ${r.message}`);
+                    return res.status(500).json({ error: `任务执行失败（${r.taskNo}）：${r.message}` });
+                }
+                return res.json({ success: true, data: { answer: legacyBridge.stripThinkTags(legacyBridge.extractAnswer(r.outputs)) } });
+            } catch (err) {
+                logger.error('[sea-marketing-任务中心] 出错: ' + err.message);
+                return res.status(500).json({ error: '营销内容生成失败：' + err.message });
+            }
+        }
+
         const apiKey = process.env.DIFY_SEA_MARKETING_API_KEY;
         const apiUrl = process.env.DIFY_SEA_MARKETING_API_URL;
         if (!apiKey || !apiUrl) {
@@ -6473,6 +6569,34 @@ app.post('/api/sea-marketing/generate', async (req, res) => {
 // ==================== 美妆智能研发内容生成 API ====================
 app.post('/api/beauty-rnd/generate', async (req, res) => {
     try {
+// 美妆研发（try 入口即拦截：避免未配置 key 时 503 先于试点分支）
+        // ── D4 试点迁移（TASK_CENTER_PILOT 含 beauty_rnd 时启用）──────────
+        // 响应对齐旧形状（前端取 resData.data?.answer）。会话历史类子路由（conversations/
+        // messages）不属任务形态，保留旧直连。
+        const b = req.body || {};
+        if (legacyBridge.isPilotSkill('beauty_rnd')) {
+            try {
+                const r = await legacyBridge.runThroughTaskCenter({
+                    skillKey: 'beauty_rnd',
+                    title: `美妆研发报告：${String(b.product_type || '').slice(0, 24)}`,
+                    user: req.user?.id ? req.user : { id: 0, username: 'beauty_anonymous', role: 'user' },
+                    inputs: {
+                        query: `Product Type: ${b.product_type}`,
+                        product_type: b.product_type, target_market: b.target_market, pain_point: b.pain_point, cert_require: b.cert_require,
+                        cost_limit: b.cost_limit, product_form: b.product_form, skin_type: b.skin_type, blacklist: b.blacklist, data_source: b.data_source,
+                    },
+                });
+                if (!r.ok) {
+                    console.error(`[美妆研发-任务中心] ${r.taskNo} 失败 ${r.errorCode}: ${r.message}`);
+                    return res.status(500).json({ error: `任务执行失败（${r.taskNo}）：${r.message}` });
+                }
+                return res.json({ success: true, data: { answer: legacyBridge.stripThinkTags(legacyBridge.extractAnswer(r.outputs)) } });
+            } catch (err) {
+                console.error('[beauty-rnd-任务中心] 异常:', err.message);
+                return res.status(500).json({ error: '研发报告生成失败：' + err.message });
+            }
+        }
+
         const apiKey = process.env.DIFY_BEAUTY_RND_API_KEY;
         const apiUrl = process.env.DIFY_BEAUTY_RND_API_URL || 'http://39.108.221.22/v1/chat-messages';
         if (!apiKey) {

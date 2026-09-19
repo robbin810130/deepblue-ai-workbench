@@ -387,6 +387,26 @@ async function main() {
                 no: 42, key: 'marketing_analysis', path: '/api/marketing-analysis/chat', auth: true,
                 body: { query: '冒烟营销分析' },
             },
+            {
+                no: 43, key: 'daily_news', path: '/api/news/analyze', auth: true,
+                body: { query: '冒烟新闻解析', newsContext: [] },
+            },
+            {
+                no: 44, key: 'layout_compare', path: '/api/layout-compare/run', auth: true,
+                stagedFile: true, body: { leftImageId: 'legacy', file_ids: null }, // file_ids 动态填
+            },
+            {
+                no: 45, key: 'risk_detection', path: '/api/risk-detection/ecommerce/run', auth: true,
+                body: { country: 'US', industry: '电商', detectionType: 'text', title: '冒烟标题', description: '冒烟描述' },
+            },
+            {
+                no: 46, key: 'sea_marketing', path: '/api/sea-marketing/generate', auth: true,
+                body: { product_name: '冒烟商品', product_info: 'x', target_language: 'en', target_platform: 'Amazon' },
+            },
+            {
+                no: 47, key: 'beauty_rnd', path: '/api/beauty-rnd/generate', auth: true,
+                body: { product_type: '面霜', target_market: '中国' },
+            },
         ];
         // 造一个暂存文件供 hazard/contract 用
         const staged = await fetch(`${BASE}/api/v1/files/upload`, {
@@ -397,9 +417,8 @@ async function main() {
         const stagedId = staged?.data?.file_id;
 
         for (const c of cases) {
-            const body = c.stagedFile
-                ? { file_ids: [stagedId] }
-                : { ...c.body, ...(c.body?.file_ids === null ? { file_ids: [stagedId] } : {}) };
+            const body = { ...(c.body || {}) };
+            if (c.stagedFile || c.body?.file_ids === null) body.file_ids = [stagedId];
             const headers = { 'content-type': 'application/json' };
             if (c.auth) headers.Authorization = `Bearer ${ALICE_TOKEN}`;
             const res = await fetch(`${BASE}${c.path}`, {
@@ -416,7 +435,7 @@ async function main() {
                     okGhost && noTask === 0, `http=${res.status} ${String(j?.message || '').slice(0, 30)}`);
                 continue;
             }
-            const okRoute = res.status === 500 && /任务执行失败/.test(j?.message || '');
+            const okRoute = res.status === 500 && /任务执行失败/.test(j?.message || j?.error || ''); // sea/beauty 沿用旧错误形状 {error}
             const { rows } = await pool.query(
                 `SELECT id, status FROM tasks WHERE skill_key=$1 ORDER BY created_at DESC LIMIT 1`,
                 [c.key],
