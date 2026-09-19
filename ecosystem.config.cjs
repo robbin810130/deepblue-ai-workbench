@@ -18,6 +18,9 @@ module.exports = {
                 APP_BASE_URL: "http://stdeepblue.eicp.net:8081",
                 // Dify「发布到业务看板」内部令牌（Dify 工作流 HTTP 节点 Header X-Internal-Token 需配同一值）
                 DASHBOARD_PUBLISH_TOKEN: "OwSgcKOORZnrYSbOgqulvFGrchxTwbYPiLcQuuOGjil",
+                // 订单识别（order_recognition，advanced-chat）：指向生产 Dify 实例的应用 API 密钥
+                DIFY_ORDER_RECOGNITION_API_URL: "http://39.108.221.22/v1",
+                DIFY_ORDER_RECOGNITION_API_KEY: "REPLACE_WITH_PRODUCTION_DIFY_APP_KEY",
                 // 可选：AI 看板 HTML 存储目录（默认 server/storage/business-dashboards，建议移到数据盘）
                 // DASHBOARD_STORAGE_DIR: "C:\\webos-data\\business-dashboards",
             },

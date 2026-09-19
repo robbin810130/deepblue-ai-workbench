@@ -230,8 +230,8 @@ export const BINDINGS = Object.freeze([
         endpoint_kind: 'workflow',
         version: '1.0',
         timeout_ms: 300000,
-        status: 'pending',
-        note: '⚠️ 待确认：bidAssistantRoutes.js（42KB）全文件未见 DIFY_ 变量，需确认其实际执行体',
+        status: 'inactive',
+        note: '🏁 2026-09-19 裁决：bidAssistantRoutes.js 为纯本地 docx 链路（解析/模板/替换/导出），全文件无 Dify 调用；catalog 亦无对应技能 —— 反向缺口，保留登记存档，不分配密钥',
     },
     {
         binding_key: 'enterprise_qualification',
@@ -265,11 +265,11 @@ export const BINDINGS = Object.freeze([
         display_name: '订单识别',
         base_url_env: 'DIFY_ORDER_RECOGNITION_API_URL',
         api_key_env: 'DIFY_ORDER_RECOGNITION_API_KEY',
-        endpoint_kind: 'workflow',
+        endpoint_kind: 'chat',
         version: '1.0',
         timeout_ms: 180000,
-        status: 'pending',
-        note: '⚠️ 待确认：现有实现用 sys_order_recognitions 表落库 + /memory 端点写入 Dify 知识库，主识别工作流的变量名需二次确认',
+        status: 'active',
+        note: '✅ 2026-09-19 补齐：本地 Dify(8088)「订单识别」应用（advanced-chat），/parameters 确认无输入表单变量，文件走 message files，故 endpoint_kind=chat',
     },
     {
         binding_key: 'product_entry',
@@ -419,8 +419,8 @@ export const BINDINGS = Object.freeze([
         endpoint_kind: 'workflow',
         version: '1.0',
         timeout_ms: 120000,
-        status: 'pending',
-        note: '⚠️ 待确认：.env.example 中未见 DOC_COPYWRITING 变量，需确认其执行体',
+        status: 'inactive',
+        note: '🏁 2026-09-19 裁决：全库无执行体、catalog 无对应技能（文案生成类需求由 sea_marketing 绑定「品牌出海本地化营销内容生成」覆盖）—— 反向缺口，保留登记存档',
     },
     {
         binding_key: 'risk_detection',
@@ -593,8 +593,8 @@ export const BINDINGS = Object.freeze([
         endpoint_kind: 'workflow',
         version: '1.0',
         timeout_ms: 180000,
-        status: 'pending',
-        note: '🔍 反向缺口：环境变量与工作流已就绪，但 appRegistry 与技能表中都没有对应应用。需裁决：补 UI 上线，还是确认废弃后清理密钥',
+        status: 'inactive',
+        note: '🏁 2026-09-19 裁决：远程工作流就绪但无技能消费（SSH 凭据缺失无法核对远端密钥）—— 降级存档；若日后补技能 manifest 上线，需先补 env 再切回 active',
     },
 ]);
 
@@ -737,7 +737,9 @@ export function checkAllBindings(env = process.env) {
     return {
         total: items.length,
         ready: items.filter((i) => i.ready).length,
-        not_ready: items.filter((i) => !i.ready).length,
+        // inactive（裁决存档/反向缺口）不缺 env 属预期，不计入 not_ready
+        not_ready: items.filter((i) => !i.ready && i.status !== 'inactive').length,
+        disabled: items.filter((i) => i.status === 'inactive').length,
         pending: items.filter((i) => i.status === 'pending').length,
         items,
     };
