@@ -32,13 +32,37 @@ const ONLY = (process.argv.find((a) => a.startsWith('--only=')) || '').replace('
     .split(',').map((s) => s.trim()).filter(Boolean);
 const inScope = (name) => !ONLY.length || ONLY.some((s) => name.includes(s));
 
+/**
+ * --remap-to=<provider>|<model>：把「模型名本地根本没有」的节点统一改到该目标模型。
+ * 用于本地未部署某模型（如 qwen3.6-27b 走 openai_api_compatible / ollama）时，
+ * 把应用改指到租户已有的等价模型。目标必须是租户可用清单里真实存在的组合。
+ */
+const REMAP_TO = (() => {
+    const raw = (process.argv.find((a) => a.startsWith('--remap-to=')) || '').replace('--remap-to=', '');
+    if (!raw || !raw.includes('|')) return null;
+    const [provider, model] = raw.split('|').map((s) => s.trim());
+    if (!provider || !model) return null;
+    return { provider, model };
+})();
+
 const api = await connect();
 const owners = await api.modelOwners();
 const apps = await api.apps();
 console.log(`登录成功 · 租户可用模型 ${owners.size} 个 · 应用 ${apps.length} 个\n`);
 
-const fixable = [];   // 可自动修
-const blocked = [];   // 模型名本地不存在，修不了
+if (REMAP_TO) {
+    const ps = owners.get(REMAP_TO.model);
+    if (!ps || !ps.has(REMAP_TO.provider)) {
+        console.error(`❌ 拒绝执行：目标模型 ${REMAP_TO.provider} / ${REMAP_TO.model} 不在租户可用清单。`);
+        console.error(`   该模型名的可选供应商：${ps ? [...ps].join(', ') : '(模型名不存在)'}`);
+        process.exit(1);
+    }
+    console.log(`🔁 重映射模式：本地不存在的模型 → ${REMAP_TO.provider} / ${REMAP_TO.model}\n`);
+}
+
+const fixable = [];   // provider 写错（模型名可用），可自动修
+const blocked = [];   // 模型名本地不存在，无法自动修
+const remaps = [];    // 模型名本地不存在，但指定了 --remap-to，可改指
 
 for (const app of apps) {
     // ⚠️ 不要按 mode 过滤：advanced-chat（chatflow）的 LLM 节点同样在 workflows.graph 里，
@@ -52,7 +76,8 @@ for (const app of apps) {
         if (!m || typeof m !== 'object' || !m.name) continue;
         const ps = owners.get(m.name);
         if (!ps) {
-            blocked.push({ app: app.name, app_id: app.id, node_id: n.id, provider: m.provider, name: m.name });
+            if (REMAP_TO) remaps.push({ app: app.name, app_id: app.id, node_id: n.id, provider: m.provider, name: m.name });
+            else blocked.push({ app: app.name, app_id: app.id, node_id: n.id, provider: m.provider, name: m.name });
         } else if (!ps.has(m.provider)) {
             fixable.push({ app: app.name, app_id: app.id, node_id: n.id, provider: m.provider, name: m.name, to: [...ps] });
         }
@@ -63,8 +88,12 @@ console.log(`❌ 模型名本地不存在（无法自动修）${blocked.length} 
 for (const b of blocked) console.log(`   ${b.app.padEnd(34)} ${b.provider} / ${b.name}`);
 console.log(`\n🔧 provider 写错但模型名可用（可自动修）${fixable.length} 处：`);
 for (const f of fixable) console.log(`   ${f.app.padEnd(34)} ${f.provider} / ${f.name}  →  ${f.to.join('|')}`);
+if (remaps.length) {
+    console.log(`\n🔁 待重映射到 ${REMAP_TO.provider} / ${REMAP_TO.model} 的节点 ${remaps.length} 处：`);
+    for (const r of remaps) console.log(`   ${r.app.padEnd(34)} ${r.provider} / ${r.name}`);
+}
 
-if (!fixable.length) { console.log('\n无需修复。'); process.exit(0); }
+if (!fixable.length && !remaps.length) { console.log('\n无需修复。'); process.exit(0); }
 if (!APPLY) { console.log('\n（未改动；加 --apply 执行）'); process.exit(0); }
 
 // ── 按应用分组执行：改草稿 → 发布 ─────────────────────────────
@@ -72,6 +101,10 @@ const byApp = new Map();
 for (const f of fixable) {
     if (!byApp.has(f.app_id)) byApp.set(f.app_id, { name: f.app, items: [] });
     byApp.get(f.app_id).items.push(f);
+}
+for (const r of remaps) {
+    if (!byApp.has(r.app_id)) byApp.set(r.app_id, { name: r.app, items: [] });
+    byApp.get(r.app_id).items.push(r);
 }
 
 const record = [];
@@ -83,9 +116,23 @@ for (const [appId, { name, items }] of byApp) {
         const m = n.data?.model;
         if (!m || typeof m !== 'object' || !m.name) continue;
         const ps = owners.get(m.name);
-        if (!ps || ps.has(m.provider)) continue;
+        // ① 模型名本地根本不存在 → 重映射到 --remap-to 指定的目标模型
+        if (!ps) {
+            if (!REMAP_TO) continue;
+            record.push({
+                kind: 'remap', app: name, app_id: appId, node_id: n.id,
+                from: { provider: m.provider, name: m.name },
+                to: { provider: REMAP_TO.provider, name: REMAP_TO.model },
+            });
+            m.provider = REMAP_TO.provider;
+            m.name = REMAP_TO.model;
+            touched++;
+            continue;
+        }
+        // ② 模型名对、供应商写错 → 只把供应商改成拥有该模型名的那家
+        if (ps.has(m.provider)) continue;
         const to = [...ps][0];
-        record.push({ app: name, app_id: appId, node_id: n.id, from: m.provider, to, model: m.name });
+        record.push({ kind: 'provider', app: name, app_id: appId, node_id: n.id, from: { provider: m.provider, name: m.name }, to: { provider: to, name: m.name } });
         m.provider = to;
         touched++;
     }
