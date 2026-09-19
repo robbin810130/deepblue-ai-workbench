@@ -565,7 +565,7 @@ export const BINDINGS = Object.freeze([
         base_url_fallback_envs: ['DIFY_API_BASE_URL'],
         api_key_env: 'DIFY_BUSINESS_DASHBOARD_API_KEY',
         api_key_fallback_envs: ['DIFY_WORKFLOW_API_KEY'],
-        endpoint_kind: 'workflow',
+        endpoint_kind: 'chat', // 旧执行体为 chat-messages 透传（2026-09-19 修正）,
         version: '1.0',
         timeout_ms: 300000,
         status: 'active',

@@ -407,6 +407,10 @@ async function main() {
                 no: 47, key: 'beauty_rnd', path: '/api/beauty-rnd/generate', auth: true,
                 body: { product_type: '面霜', target_market: '中国' },
             },
+            {
+                no: 48, key: 'business_dashboard', path: '/api/business-dashboard/chat', auth: true,
+                body: { query: '冒烟业务看板' },
+            },
         ];
         // 造一个暂存文件供 hazard/contract 用
         const staged = await fetch(`${BASE}/api/v1/files/upload`, {

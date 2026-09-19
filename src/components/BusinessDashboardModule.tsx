@@ -864,6 +864,20 @@ const handleSend = async (queryText?: string) => {
         };
         setMessages(prev => [...prev, aiMsg]);
       } else {
+        // D4 试点迁移：任务中心模式返回完整 JSON（弃流式）；旧透传模式仍为 SSE
+        const pilotCt = response.headers.get('content-type') || '';
+        if (pilotCt.includes('application/json')) {
+          const j = await response.json().catch(() => null);
+          if (j?.success === false) throw new Error(j?.message || j?.error || '任务执行失败');
+          const fullText = String(j?.data?.answer ?? j?.data ?? '');
+          setMessages(prev => prev.map(msg =>
+            msg.id === assistantMessageId
+              ? { ...msg, content: fullText, rawJson: j?.data ?? msg.rawJson }
+              : msg
+          ));
+          return;
+        }
+
         // Render initial empty message
         setMessages(prev => [...prev, {
           id: assistantMessageId,

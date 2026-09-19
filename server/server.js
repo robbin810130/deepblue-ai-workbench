@@ -9496,6 +9496,34 @@ app.post('/api/business-dashboard/upload', upload.single('file'), async (req, re
 
 app.post('/api/business-dashboard/chat', async (req, res) => {
     try {
+        // ── D4 试点迁移（TASK_CENTER_PILOT 含 business_dashboard 时启用）──────────
+        // 旧路径为 Dify 透传代理（SSE/JSON 双形态）；试点返回完整 JSON（前端双模式兼容）。
+        // 多轮：前端 conversation_id 随 body 传入，provider 透传 Dify 保持会话语义。
+        const bdBody = req.body || {};
+        if (legacyBridge.isPilotSkill('business_dashboard')) {
+            try {
+                const r = await legacyBridge.runThroughTaskCenter({
+                    skillKey: 'business_dashboard',
+                    title: `业务看板：${String(bdBody.query || '').slice(0, 24)}`,
+                    user: req.user?.id ? req.user : { id: 0, username: 'dashboard_anonymous', role: 'user' },
+                    inputs: {
+                        query: bdBody.query || bdBody.inputs?.query || '请提供业务经营分析建议',
+                        conversation_id: bdBody.conversation_id,
+                    },
+                });
+                if (!r.ok) {
+                    console.error(`[业务看板-任务中心] ${r.taskNo} 失败 ${r.errorCode}: ${r.message}`);
+                    return res.status(500).json({ error: `任务执行失败（${r.taskNo}）：${r.message}` });
+                }
+                return res.json({
+                    success: true,
+                    data: { answer: legacyBridge.stripThinkTags(legacyBridge.extractAnswer(r.outputs)) },
+                });
+            } catch (error) {
+                console.error('[业务看板-任务中心] 异常:', error.message);
+                return res.status(500).json({ error: error.message });
+            }
+        }
         const DIFY_API_KEY = process.env.DIFY_BUSINESS_DASHBOARD_API_KEY || process.env.DIFY_WORKFLOW_API_KEY;
         const DIFY_URL = process.env.DIFY_BUSINESS_DASHBOARD_API_URL || 'http://39.108.221.22/v1/chat-messages';
 
