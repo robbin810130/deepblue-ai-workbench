@@ -12,18 +12,21 @@
  *   /dashboard      数据看板
  *   /admin/*        管理后台
  *
- * 进度：/workbench、/scenes、/scenes/:key、/skills/:key、/tasks、/tasks/:id 已实现；
- *      /knowledge、/dashboard、/admin 为占位，后续轮次替换。
+ * 进度：/workbench、/scenes、/scenes/:key、/skills/:key、/tasks、/tasks/:id、
+ *      /knowledge、/dashboard、/admin、/settings 均已实现。
  */
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppShell } from './AppShell';
-import { ComingSoon } from '../components/common/ComingSoon';
 import { WorkbenchPage } from '../features/workbench/WorkbenchPage';
 import { ScenesPage } from '../features/scenes/ScenesPage';
 import { SceneDetailPage } from '../features/scenes/SceneDetailPage';
 import { SkillUsePage } from '../features/skills/SkillUsePage';
 import { TasksPage } from '../features/tasks/TasksPage';
 import { TaskDetailPage } from '../features/tasks/TaskDetailPage';
+import { KnowledgePage } from '../features/knowledge/KnowledgePage';
+import { DashboardPage } from '../features/dashboard/DashboardPage';
+import { AdminPage } from '../features/admin/AdminPage';
+import { SettingsPage } from '../features/settings/SettingsPage';
 
 export function AppRoutes({ username }: { username: string }) {
   return (
@@ -44,15 +47,12 @@ export function AppRoutes({ username }: { username: string }) {
         <Route path="/tasks" element={<TasksPage />} />
         <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
 
-        <Route
-          path="/knowledge"
-          element={<ComingSoon title="知识库" hint="知识空间 / 文档列表 / 知识问答 / 文档详情。" />}
-        />
+        <Route path="/knowledge" element={<KnowledgePage />} />
 
-        <Route path="/dashboard" element={<ComingSoon title="数据看板" />} />
+        <Route path="/dashboard" element={<DashboardPage />} />
 
-        <Route path="/admin/*" element={<ComingSoon title="管理后台" />} />
-        <Route path="/settings" element={<ComingSoon title="系统设置" />} />
+        <Route path="/admin/*" element={<AdminPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
 
         <Route path="*" element={<Navigate to="/workbench" replace />} />
       </Route>
