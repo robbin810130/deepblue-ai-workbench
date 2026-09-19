@@ -20,6 +20,8 @@ import knowledgeAdminRoutes from './knowledgeAdminRoutes.js'; // 知识库管理
 import keyAccountRoutes from './keyAccountRoutes.js'; // 大客户档案模块路由
 import bidAssistantRoutes from './bidAssistantRoutes.js'; // 投标助手模块路由
 import * as legacyBridge from './modules/tasks/legacyBridge.js'; // D4 试点：存量路由 → 任务中心迁移桥
+import { ingestTenderOutputs } from './modules/tender/tenderIngest.js'; // 招标检索入库（D4 试点抽出）
+import { loadStagedBuffers } from './modules/files/fileStore.js'; // 暂存文件水合（file_ids → Dify 转换用）
 import reviewPartnerRoutes from './reviewPartnerRoutes.js'; // 复盘搭子模块路由
 import productLibraryRoutes from './productLibraryRoutes.js'; // 选品库模块路由
 import logisticsConfigRoutes from './logisticsConfigRoutes.js'; // 物流费计算配置路由
@@ -5523,16 +5525,73 @@ app.post('/api/contract-audit/run', async (req, res) => {
         const apiUrl = process.env.DIFY_CONTRACT_AUDIT_API_URL || 'http://39.108.221.22/v1/chat-messages';
         logAudit(req, { module: 'CONTRACT_AUDIT', action: 'RUN_AUDIT' });
 
+        // ── D4 试点迁移（TASK_CENTER_PILOT 含 contract_review 时启用）──────────
+        // 建任务 → 执行 → 通知闭环；响应改为完整 JSON（前端按 content-type 双模式兼容）。
+        if (legacyBridge.isPilotSkill('contract_review')) {
+            try {
+                const body = req.body || {};
+                const fileIds = Array.isArray(body.file_ids) ? body.file_ids.map(String) : [];
+                const r = await legacyBridge.runThroughTaskCenter({
+                    skillKey: 'contract_review',
+                    title: `合同审核：${String(body.query || '').slice(0, 24)}`,
+                    user: req.user?.id ? req.user : { id: 0, username: 'contract_anonymous', role: 'user' },
+                    inputs: { message: body.query || '请审核这份合同' },
+                    files: fileIds,
+                });
+                if (!r.ok) {
+                    console.error(`[合同审核-任务中心] ${r.taskNo} 失败 ${r.errorCode}: ${r.message}`);
+                    return res.status(500).json({ success: false, message: `任务执行失败（${r.taskNo}）：${r.message}` });
+                }
+                const text = String(
+                    r.outputs?._extra?.answer ?? r.outputs?.answer
+                    ?? legacyBridge.extractAnswerText(r.outputs ?? {}) ?? '',
+                );
+                return res.json({ success: true, data: text });
+            } catch (err) {
+                console.error('[合同审核-任务中心] 异常:', err.message);
+                if (!res.headersSent) return res.status(500).json({ success: false, message: `AI 诊断异常: ${err.message}` });
+                return;
+            }
+        }
+
         if (!apiKey) {
             return res.status(503).json({ error: '后端 DIFY_CONTRACT_AUDIT_API_KEY 未配置，请联系管理员。' });
         }
 
         console.log('[合同审核引擎] 转发合同审核分析请求');
 
-        const payload = {
+        // 旧直连路径：前端已改传平台暂存 file_ids —— 这里水合后转传 Dify（行为对齐旧协议）
+        let payload = {
             ...req.body,
             user: req.user?.username || req.body.user || 'web-client-user'
         };
+        if (Array.isArray(req.body?.file_ids) && req.body.file_ids.length > 0) {
+            const baseUpload = String(apiUrl).replace(/\/chat-messages.*$/, '/files/upload');
+            const bufs = await loadStagedBuffers(req.body.file_ids.map(String));
+            const difyFiles = [];
+            for (const f of bufs) {
+                const fd = new FormData();
+                fd.append('file', new Blob([f.buffer], { type: f.mimeType }), f.name);
+                fd.append('user', payload.user);
+                const upRes = await fetch(baseUpload, {
+                    method: 'POST',
+                    headers: { Authorization: `Bearer ${apiKey}` },
+                    body: fd,
+                });
+                if (!upRes.ok) {
+                    const errText = await upRes.text().catch(() => `HTTP ${upRes.status}`);
+                    throw new Error(`Dify 文件上传失败 (${upRes.status}): ${errText.slice(0, 200)}`);
+                }
+                const upData = await upRes.json();
+                difyFiles.push({
+                    type: String(f.mimeType || '').startsWith('image/') ? 'image' : 'document',
+                    transfer_method: 'local_file',
+                    upload_file_id: upData.id,
+                });
+            }
+            delete payload.file_ids;
+            payload.files = difyFiles;
+        }
 
         const difyRes = await fetch(apiUrl, {
             method: 'POST',
@@ -6791,6 +6850,33 @@ app.post('/api/material-quote/run', async (req, res) => {
         logAudit(req, { module: 'MATERIAL_QUOTE', action: 'RUN_INQUIRY', details: { upload_file_id, file_type } });
         logger.info(`[material-quote] 收到询价请求: file_id=${upload_file_id}, type=${file_type}, user=${req.user?.username}`);
 
+        // ── D4 试点迁移（TASK_CENTER_PILOT 含 material_quote 时启用）──────────
+        // 建任务 → 执行 → 通知闭环；响应改为完整 JSON（弃 SSE）。
+        // ⚠️ 启用前提：消费方需支持 JSON 响应（本仓库暂无该模块新前端，旧前端为 SSE 消费）。
+        if (legacyBridge.isPilotSkill('material_quote')) {
+            try {
+                const r = await legacyBridge.runThroughTaskCenter({
+                    skillKey: 'material_quote',
+                    title: `物料报价${upload_file_id ? '（含附件）' : ''}`,
+                    user: req.user?.id ? req.user : { id: 0, username: 'material_anonymous', role: 'user' },
+                    inputs: { message: query || '开始' },
+                    files: upload_file_id ? [String(upload_file_id)] : [],
+                });
+                if (!r.ok) {
+                    console.error(`[物料报价-任务中心] ${r.taskNo} 失败 ${r.errorCode}: ${r.message}`);
+                    return res.status(500).json({ success: false, message: `任务执行失败（${r.taskNo}）：${r.message}` });
+                }
+                const text = String(
+                    r.outputs?._extra?.answer ?? r.outputs?.answer
+                    ?? legacyBridge.extractAnswerText(r.outputs ?? {}) ?? '',
+                );
+                return res.json({ success: true, data: text });
+            } catch (err) {
+                console.error('[物料报价-任务中心] 异常:', err.message);
+                return res.status(500).json({ success: false, message: `AI 诊断异常: ${err.message}` });
+            }
+        }
+
         if (!apiKey || apiKey.includes('PLACEHOLDER')) {
             return res.status(503).json({ error: '服务端 API Key 未配置，请在 .env 中填入智能引擎密钥。' });
         }
@@ -7945,115 +8031,9 @@ async function runTenderSearchDify(params = {}) {
     }
 
     const difyData = await difyRes.json();
-    let structuredData = {};
 
-    // workflow 模式：从 data.outputs 提取
-    const outputs = difyData?.data?.outputs || {};
-
-    // 情况1：outputs 本身包含 items 数组
-    if (outputs.items || outputs.top_items) {
-        structuredData = outputs;
-    }
-    // 情况2：outputs 中的某个字段值是 JSON 字符串（包含 items）
-    if (!structuredData.items && typeof outputs === 'object') {
-        for (const val of Object.values(outputs)) {
-            if (typeof val === 'string') {
-                try {
-                    const parsed = JSON.parse(val);
-                    if (parsed.items || parsed.top_items) { structuredData = parsed; break; }
-                } catch (e) {}
-            }
-        }
-    }
-    // 情况3：从 markdown JSON 代码块提取
-    if (!structuredData.items) {
-        const outputStr = typeof outputs === 'string' ? outputs : JSON.stringify(outputs);
-        const m = outputStr.match(/```json\s*\n([\s\S]*?)\n```/);
-        if (m) { try { structuredData = JSON.parse(m[1]); } catch (e) {} }
-    }
-    // 情况4：整个响应就是数据（非标准 workflow 响应）
-    if (!structuredData.items && difyData.items) {
-        structuredData = difyData;
-    }
-
-    // Dify 返回 items 数组（兼容 top_items）
-    const rawItems = structuredData.items || structuredData.top_items || [];
-    console.log(`[招标检索] 完成, items: ${rawItems.length}`);
-
-    // 存入数据库
-    let insertedCount = 0;
-    let skippedCount = 0;
-    if (rawItems.length > 0) {
-        const batchId = 'BATCH-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
-        const cols = ['batch_id','bid_id','bid_no','bid_type','bid_process','bidder_name','project_name','biz_type','project_amount','channel_type','region','bidder_count','budget_amount','file_acquire_time','file_acquire_method','bid_doc_fee','deadline','bid_method','source_site','link','candidate_names','winning_company','winning_amount','announcement_date'];
-        const placeholders = cols.map((_, i) => '$' + (i + 1)).join(',');
-        const sql = 'INSERT INTO sys_tender_results (' + cols.join(',') + ') VALUES (' + placeholders + ')';
-
-        // 查询已存在的 bid_no 和 bid_id，用于去重（优先 bid_no，回退 bid_id）
-        const nonEmptyBidNos = rawItems.map(item => String(item.bid_no || '').trim()).filter(id => id);
-        const nonEmptyBidIds = rawItems.map(item => String(item.bid_id || '').trim()).filter(id => id);
-        let existingBidNos = new Set();
-        let existingBidIds = new Set();
-        if (nonEmptyBidNos.length > 0) {
-            const existRes = await pool.query('SELECT bid_no FROM sys_tender_results WHERE bid_no = ANY($1)', [nonEmptyBidNos]);
-            existingBidNos = new Set(existRes.rows.map(r => r.bid_no));
-        }
-        if (nonEmptyBidIds.length > 0) {
-            const existRes = await pool.query('SELECT bid_id FROM sys_tender_results WHERE bid_id = ANY($1)', [nonEmptyBidIds]);
-            existingBidIds = new Set(existRes.rows.map(r => r.bid_id));
-        }
-
-        for (const item of rawItems) {
-            const bidNo = String(item.bid_no || '').trim();
-            const bidId = String(item.bid_id || '').trim();
-            // 如果 bid_no 非空且已存在，跳过；否则如果 bid_id 非空且已存在，跳过
-            if (bidNo && existingBidNos.has(bidNo)) {
-                skippedCount++;
-                continue;
-            }
-            if (!bidNo && bidId && existingBidIds.has(bidId)) {
-                skippedCount++;
-                continue;
-            }
-            // 字段映射：Dify 字段名 → 数据库字段名
-            const vals = [
-                batchId,
-                String(item.bid_id || '').slice(0, 200),
-                String(item.bid_no || '').slice(0, 200),
-                parseInt(item.bid_type) || 0,
-                parseInt(item.bid_process) || 0,
-                String(item.bidder_name || '').slice(0, 500),
-                String(item.project_name || '').slice(0, 500),
-                String(item.business_type || item.biz_type || '').slice(0, 100),        // business_type → biz_type
-                String(item.project_amount || '').slice(0, 200),
-                String(item.channel_type || '').slice(0, 100),
-                String(item.region || '').slice(0, 200),
-                parseInt(item.shortlisted_count) || parseInt(item.bidder_count) || 0,   // shortlisted_count → bidder_count
-                String(item.budget_amount || '').slice(0, 200),
-                String(item.doc_period || item.file_acquire_time || '').slice(0, 100),  // doc_period → file_acquire_time
-                String(item.doc_method || item.file_acquire_method || '').slice(0, 200), // doc_method → file_acquire_method
-                String(item.doc_fee || item.bid_doc_fee || '').slice(0, 100),           // doc_fee → bid_doc_fee
-                String(item.bid_deadline || item.deadline || '').slice(0, 100),         // bid_deadline → deadline
-                String(item.bid_method || '').slice(0, 100),
-                String(item.source_website || item.source_site || '').slice(0, 200),    // source_website → source_site
-                String(item.bid_url || item.link || '').slice(0, 1000),                  // bid_url → link
-                JSON.stringify(item.candidate_names || item.candidate_names || []),       // candidate_names
-                String(item.winning_company || '').slice(0, 500),
-                String(item.winning_amount || '').slice(0, 200),
-                String(item.announcement_date || '').slice(0, 100)
-            ];
-            try { await pool.query(sql, vals); insertedCount++; } catch (e) { console.warn('[招标检索] 插入失败:', e.message); }
-        }
-        console.log(`[招标检索] 已入库 ${insertedCount} 条, 跳过重复 ${skippedCount} 条, batch_id=${batchId}`);
-    }
-
-    return {
-        success: true,
-        message: structuredData.message || '检索完成',
-        items_count: insertedCount,
-        skipped_count: skippedCount,
-        items: rawItems
-    };
+    // 解析 + 去重 + 入库（D4 试点迁移抽出：modules/tender/tenderIngest.js，cron/旧路由/试点三路共用）
+    return ingestTenderOutputs(difyData?.data?.outputs || {});
 }
 
 // 招标详情同步 - 调用 Dify 工作流获取星标记录的最新详情并更新
@@ -8486,6 +8466,27 @@ app.post('/api/tender-search/run', authenticateToken, async (req, res) => {
             action: 'RUN_SEARCH',
             details: { time_range, top_n, begin_date, end_date }
         });
+        // ── D4 试点迁移（TASK_CENTER_PILOT 含 tender_search 时启用）──────────
+        // 建任务 → 执行 → 通知闭环 → 结果解析+去重+入库（与旧路径同一共享模块）。
+        if (legacyBridge.isPilotSkill('tender_search')) {
+            const inputs = {};
+            if (time_range !== undefined && time_range !== null && time_range !== '') inputs.time_range = String(time_range);
+            if (top_n !== undefined && top_n !== null && top_n !== '') inputs.top_n = String(top_n);
+            if (begin_date !== undefined && begin_date !== null && begin_date !== '') inputs.begin_date = String(begin_date);
+            if (end_date !== undefined && end_date !== null && end_date !== '') inputs.end_date = String(end_date);
+            const r = await legacyBridge.runThroughTaskCenter({
+                skillKey: 'tender_search',
+                title: `招标检索：${inputs.time_range || inputs.begin_date || '默认范围'}`,
+                user: req.user,
+                inputs,
+            });
+            if (!r.ok) {
+                console.error(`[招标检索-任务中心] ${r.taskNo} 失败 ${r.errorCode}: ${r.message}`);
+                return res.status(500).json({ success: false, message: `任务执行失败（${r.taskNo}）：${r.message}` });
+            }
+            return res.json(await ingestTenderOutputs(r.outputs ?? {}));
+        }
+
         const result = await runTenderSearchDify({
             user: req.user?.username || 'web_os_user',
             time_range, top_n, begin_date, end_date

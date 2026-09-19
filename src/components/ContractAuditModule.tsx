@@ -5,7 +5,7 @@ import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import rehypeRaw from 'rehype-raw';
 import { fetchWithAuth } from '../utils/authFetch';
-import { AI_CONTRACT_AUDIT_RUN_ENDPOINT, AI_CONTRACT_AUDIT_UPLOAD_ENDPOINT } from '../config';
+import { AI_CONTRACT_AUDIT_RUN_ENDPOINT } from '../config';
 
 export const ContractAuditModule: React.FC = () => {
     const [file, setFile] = useState<File | null>(null);
@@ -46,14 +46,15 @@ export const ContractAuditModule: React.FC = () => {
             const formData = new FormData();
             formData.append('file', selectedFile);
 
-            const response = await fetchWithAuth(AI_CONTRACT_AUDIT_UPLOAD_ENDPOINT, {
+            // D4 试点迁移：改走平台暂存（/api/v1/files/upload），执行时由任务中心上传给 Dify
+            const response = await fetchWithAuth('/api/v1/files/upload', {
                 method: 'POST',
                 body: formData
             });
 
             if (!response.ok) throw new Error('文件上传失败');
             const data = await response.json();
-            setUploadFileId(data.id);
+            setUploadFileId(data?.data?.file_id || data.id);
         } catch (err: any) {
             setErrorMsg(err.message || '上传过程中出错');
         } finally {
@@ -77,13 +78,8 @@ export const ContractAuditModule: React.FC = () => {
                 // [Fix #2] 强制调整提示词：约束大模型只要发现风险条款，必须通过 Markdown 的引用符把原句子原封不动地返回，以便触发前端拦截器画粗红框
                 query: (contractType === 'client' ? '客户类合同审核' : '供应商类合同审核') + '。注意：如果在审查过程中发现任何需要修改或包含潜在风险的合同霸王条款，请务必使用 Markdown 的区块引用语法（即以 > 打头）将存在风险的【原始合同原文】予以完整摘录。',
                 response_mode: "streaming",
-                files: [
-                    {
-                        type: "document",
-                        transfer_method: "local_file",
-                        upload_file_id: uploadFileId
-                    }
-                ]
+                // D4 试点迁移：传平台暂存 file_id（服务端负责上传给 Dify）
+                file_ids: [uploadFileId],
             };
 
             const response = await fetchWithAuth(AI_CONTRACT_AUDIT_RUN_ENDPOINT, {
@@ -94,6 +90,15 @@ export const ContractAuditModule: React.FC = () => {
 
             if (!response.ok) throw new Error(`请求失败 (${response.status})`);
             if (!response.body) throw new Error("环境不支持流式读取");
+
+            // D4 试点迁移：任务中心模式返回完整 JSON（弃流式）；旧直连模式仍是 SSE。
+            const contentType = response.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
+                const j = await response.json();
+                if (j.success === false) throw new Error(j.message || '任务执行失败');
+                setApiResult(String(j.data ?? ''));
+                return;
+            }
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder();

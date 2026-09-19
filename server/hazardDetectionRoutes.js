@@ -10,8 +10,67 @@
  */
 
 import express from 'express';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import * as fileStore from './modules/files/fileStore.js';
+import * as legacyBridge from './modules/tasks/legacyBridge.js'; // D4 试点：任务中心迁移桥
 
 const router = express.Router();
+
+// ─── Dify 综合隐患检测（D4 试点迁移：旧路径与任务中心共享）────────────────
+/** 发给 Dify chatflow 的固定指令（旧实现原样） */
+const HAZARD_DETECT_QUERY = '请对这些图片进行全面的综合隐患检测，并严格按照约定好的JSON格式返回分析报告。不要返回除了JSON以外的任何内容。';
+
+/**
+ * 解析 Dify 的迭代输出（可能包含多个 JSON 块：标准数组 / `- ` 分隔 / markdown 包装）。
+ * 从旧路由内联逻辑原样抽出，旧直连路径与任务中心试点路径共用。
+ */
+function parseHazardJsonBlocks(answerText) {
+    const jsonBlocks = [];
+    try {
+        // 尝试直接解析（万一模型直接返回了一个标准 JSON 数组）
+        const cleanStr = answerText.replace(/```(?:json)?\s*([\s\S]*?)\s*```/g, '$1').trim();
+        const parsed = JSON.parse(cleanStr);
+        if (Array.isArray(parsed)) {
+            jsonBlocks.push(...parsed);
+        } else {
+            jsonBlocks.push(parsed);
+        }
+    } catch (e) {
+        // 解析失败说明大模型输出了带有 `- ` 或 Markdown 分隔的多个独立 JSON 对象
+        const blocks = answerText.split(/(?:^-|\n-)\s*/).filter(b => b.trim());
+        for (const block of blocks) {
+            let jsonStr = block.trim();
+            // 剔除可能的 ```json 包装
+            const jsonMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+            if (jsonMatch) {
+                jsonStr = jsonMatch[1];
+            }
+            try {
+                const firstBrace = jsonStr.indexOf('{');
+                const lastBrace = jsonStr.lastIndexOf('}');
+                if (firstBrace !== -1 && lastBrace !== -1) {
+                    jsonStr = jsonStr.substring(firstBrace, lastBrace + 1);
+                    jsonBlocks.push(JSON.parse(jsonStr));
+                }
+            } catch (e2) {
+                console.error('单个 JSON 块解析失败:', jsonStr);
+            }
+        }
+    }
+    return jsonBlocks;
+}
+
+/** 补齐缺失的结果以匹配图片数量，防止前端越界报错（旧实现原样） */
+function padHazardResults(jsonBlocks, count) {
+    return Array.from({ length: count }, (_, idx) => jsonBlocks[idx] || {
+        total_hazards_detected: 0,
+        overall_risk_level: 'Unknown',
+        environment_context: '未成功获取到该图片的分析报告',
+        findings: [],
+    });
+}
 
 // ─── Access Token 内存缓存 ────────────────────────────────────────────────────
 let cachedToken = null;
@@ -246,10 +305,62 @@ router.post('/detect', async (req, res) => {
  */
 router.post('/dify-detect', async (req, res) => {
     try {
-        const { images } = req.body;
-        if (!images || !Array.isArray(images) || images.length === 0) {
-            return res.status(400).json({ success: false, message: '缺少图片数据(images 数组)' });
+        const { images, file_ids } = req.body;
+        const hasImages = Array.isArray(images) && images.length > 0;
+        const hasFileIds = Array.isArray(file_ids) && file_ids.length > 0;
+        if (!hasImages && !hasFileIds) {
+            return res.status(400).json({ success: false, message: '缺少图片数据（images 或 file_ids 数组）' });
         }
+
+        // ── D4 试点迁移（TASK_CENTER_PILOT 含 hazard_detection 时启用）──────────
+        // 新前端传暂存 file_id；旧 base64 客户端由服务端代为暂存后走同一任务中心链路。
+        // 注：本路由历史无鉴权，无登录态时任务归属到占位用户 id=0。
+        if (legacyBridge.isPilotSkill('hazard_detection')) {
+            try {
+                const pilotUser = req.user?.id ? req.user : { id: 0, username: req.user?.username || 'hazard_anonymous', role: 'user' };
+                let ids = hasFileIds ? file_ids.map(String) : [];
+                if (!hasFileIds) {
+                    for (let i = 0; i < images.length; i++) {
+                        const buf = Buffer.from(String(images[i]).replace(/^data:image\/\w+;base64,/, ''), 'base64');
+                        const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'hazard-'));
+                        const tmpFile = path.join(tmpDir, `hazard_image_${i}.jpg`);
+                        await fs.promises.writeFile(tmpFile, buf);
+                        const rec = await fileStore.saveStagedFile({
+                            tmpPath: tmpFile,
+                            originalName: `hazard_image_${i}.jpg`,
+                            mimeType: 'image/jpeg',
+                            uploadedBy: pilotUser.id,
+                        });
+                        ids.push(rec.id);
+                    }
+                }
+                const r = await legacyBridge.runThroughTaskCenter({
+                    skillKey: 'hazard_detection',
+                    title: `隐患检测（${ids.length} 张图片）`,
+                    user: pilotUser,
+                    inputs: { message: HAZARD_DETECT_QUERY },
+                    files: ids,
+                });
+                if (!r.ok) {
+                    console.error(`[隐患检测-任务中心] ${r.taskNo} 失败 ${r.errorCode}: ${r.message}`);
+                    return res.status(500).json({ success: false, message: `任务执行失败（${r.taskNo}）：${r.message}` });
+                }
+                const answerText = String(
+                    r.outputs?._extra?.answer ?? r.outputs?.answer
+                    ?? legacyBridge.extractAnswerText(r.outputs ?? {}) ?? '',
+                );
+                const jsonBlocks = parseHazardJsonBlocks(answerText);
+                if (jsonBlocks.length === 0) {
+                    console.error('JSON 提取完全失败，原始文本:', answerText.slice(0, 500));
+                    throw new Error('AI 返回的数据格式无法解析为 JSON');
+                }
+                return res.json({ success: true, data: padHazardResults(jsonBlocks, ids.length) });
+            } catch (err) {
+                console.error('[隐患检测-任务中心] 异常:', err.message);
+                return res.status(500).json({ success: false, message: `AI 诊断异常: ${err.message}` });
+            }
+        }
+
 
         const apiKey = process.env.DIFY_API_KEY_HAZARD;
         const apiUrl = process.env.DIFY_API_URL; // e.g. http://39.108.221.22/v1/chat-messages
@@ -319,41 +430,8 @@ router.post('/dify-detect', async (req, res) => {
         const chatData = await chatRes.json();
         let answerText = chatData.answer || '';
 
-        // 4. 解析 Dify 的迭代输出结果（可能包含多个 JSON 块）
-        let jsonBlocks = [];
-        try {
-            // 尝试直接解析（万一模型直接返回了一个标准 JSON 数组）
-            let cleanStr = answerText.replace(/```(?:json)?\s*([\s\S]*?)\s*```/g, '$1').trim();
-            let parsed = JSON.parse(cleanStr);
-            if (Array.isArray(parsed)) {
-                jsonBlocks = parsed;
-            } else {
-                jsonBlocks = [parsed];
-            }
-        } catch(e) {
-            // 解析失败说明大模型输出了带有 `- ` 或 Markdown 分隔的多个独立 JSON 对象
-            const blocks = answerText.split(/(?:^-|\n-)\s*/).filter(b => b.trim());
-            for (let block of blocks) {
-                let jsonStr = block.trim();
-                // 剔除可能的 ```json 包装
-                const jsonMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-                if (jsonMatch) {
-                    jsonStr = jsonMatch[1];
-                }
-                try {
-                    const firstBrace = jsonStr.indexOf('{');
-                    const lastBrace = jsonStr.lastIndexOf('}');
-                    if (firstBrace !== -1 && lastBrace !== -1) {
-                        jsonStr = jsonStr.substring(firstBrace, lastBrace + 1);
-                        const parsed = JSON.parse(jsonStr);
-                        jsonBlocks.push(parsed);
-                    }
-                } catch(e2) {
-                    console.error("单个 JSON 块解析失败:", jsonStr);
-                }
-            }
-        }
-
+        // 4. 解析 Dify 的迭代输出结果（共享函数：旧路径与任务中心试点路径共用）
+        const jsonBlocks = parseHazardJsonBlocks(answerText);
         if (jsonBlocks.length === 0) {
             console.error('JSON 提取完全失败，原始文本:', answerText);
             throw new Error('AI 返回的数据格式无法解析为 JSON');

@@ -340,7 +340,7 @@ async function main() {
             `${pilotNotify.length} 条通知`);
     }
     {
-        // 开关关闭验证：quote_verify 不在 TASK_CENTER_PILOT 里（server 只开了 invoice_verify）
+        // 开关关闭验证：quote_verify 不在 TASK_CENTER_PILOT 里（server 只开了其余五个）
         // → 走旧直连路径，报「服务端未配置」且【不】建任务。
         const before = await pool.query(`SELECT count(*)::int AS n FROM tasks WHERE skill_key='quote_verify'`);
         const res = await fetch(`${BASE}/api/quote-verify/run`, {
@@ -354,6 +354,73 @@ async function main() {
             res.status === 500 && /未配置/.test(body?.message || '')
                 && after.rows[0].n === before.rows[0].n,
             `http=${res.status} 任务数 ${before.rows[0].n}→${after.rows[0].n}`);
+    }
+    {
+        // ── 36-39：tender / hazard / contract / material 四个新试点的失败闭环 ──
+        // 绑定 env 冒烟环境不设 → BINDING_INCOMPLETE；但任务/事件/通知必须落库。
+        const cases = [
+            {
+                no: 36, key: 'tender_search', path: '/api/tender-search/run', auth: true,
+                body: { time_range: '近7天', top_n: 5 },
+            },
+            {
+                no: 37, key: 'hazard_detection', path: '/api/hazard-detection/dify-detect', auth: true,
+                stagedFile: true, body: null, // file_ids 动态填
+            },
+            {
+                no: 38, key: 'contract_review', path: '/api/contract-audit/run', auth: true,
+                body: { query: '冒烟合同审核', file_ids: null }, // file_ids 动态填
+            },
+            {
+                no: 39, key: 'material_quote', path: '/api/material-quote/run', auth: true,
+                body: { query: '开始' }, ghostGuard: true, // 幽灵技能（live:false）：桥必须拒绝且不建任务
+            },
+        ];
+        // 造一个暂存文件供 hazard/contract 用
+        const staged = await fetch(`${BASE}/api/v1/files/upload`, {
+            method: 'POST',
+            headers: { Authorization: `Bearer ${ALICE_TOKEN}` },
+            body: (() => { const fd = new FormData(); fd.append('file', new Blob([Buffer.from('冒烟附件')], { type: 'application/octet-stream' }), '冒烟附件.txt'); return fd; })(),
+        }).then((r) => r.json());
+        const stagedId = staged?.data?.file_id;
+
+        for (const c of cases) {
+            const body = c.stagedFile
+                ? { file_ids: [stagedId] }
+                : { ...c.body, ...(c.body?.file_ids === null ? { file_ids: [stagedId] } : {}) };
+            const headers = { 'content-type': 'application/json' };
+            if (c.auth) headers.Authorization = `Bearer ${ALICE_TOKEN}`;
+            const res = await fetch(`${BASE}${c.path}`, {
+                method: 'POST', headers, body: JSON.stringify(body),
+            });
+            const j = await res.json().catch(() => ({}));
+            if (c.ghostGuard) {
+                // 幽灵技能守卫：拒绝执行且不建任务（500 + 技能不可用）
+                const okGhost = res.status === 500 && /技能不可用/.test(j?.message || '');
+                const { rowCount: noTask } = await pool.query(
+                    `SELECT 1 FROM tasks WHERE skill_key=$1 AND title LIKE '%物料报价%'`, [c.key],
+                );
+                check(`${c.no}. ${c.key} 幽灵技能守卫（拒绝执行+不建任务）`,
+                    okGhost && noTask === 0, `http=${res.status} ${String(j?.message || '').slice(0, 30)}`);
+                continue;
+            }
+            const okRoute = res.status === 500 && /任务执行失败/.test(j?.message || '');
+            const { rows } = await pool.query(
+                `SELECT id, status FROM tasks WHERE skill_key=$1 ORDER BY created_at DESC LIMIT 1`,
+                [c.key],
+            );
+            const t = rows[0];
+            const okTask = t && t.status === 'failed';
+            const { rows: evs } = await pool.query(
+                `SELECT detail FROM task_events WHERE task_id=$1 AND event_type='task_failed'`, [t?.id],
+            );
+            const okNotify = (await pool.query(
+                `SELECT 1 FROM task_notifications WHERE task_id=$1 AND type='task_failed' AND read_at IS NULL`, [t?.id],
+            )).rowCount > 0;
+            check(`${c.no}. ${c.key} 试点闭环（路由500+任务failed+失败通知）`,
+                okRoute && okTask && evs.length > 0 && okNotify,
+                `http=${res.status} task=${t ? t.status : '无'} 事件=${evs.length} 通知=${okNotify ? '有' : '无'}`);
+        }
     }
 
     await pool.end();

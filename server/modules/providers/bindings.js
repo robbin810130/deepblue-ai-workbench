@@ -169,7 +169,7 @@ export const BINDINGS = Object.freeze([
         display_name: '合同审核',
         base_url_env: 'DIFY_CONTRACT_AUDIT_API_URL',
         api_key_env: 'DIFY_CONTRACT_AUDIT_API_KEY',
-        endpoint_kind: 'workflow',
+        endpoint_kind: 'chat', // 旧执行体 chat-messages（SSE chatflow），2026-09-19 修正
         version: '1.0',
         timeout_ms: 180000,
         status: 'active',
@@ -345,7 +345,7 @@ export const BINDINGS = Object.freeze([
         display_name: '物料报价',
         base_url_env: 'DIFY_MATERIAL_QUOTE_API_URL',
         api_key_env: 'DIFY_MATERIAL_QUOTE_API_KEY',
-        endpoint_kind: 'workflow',
+        endpoint_kind: 'chat', // 旧执行体 chat-messages（SSE chatflow），2026-09-19 修正
         version: '1.0',
         timeout_ms: 180000,
         status: 'active',
@@ -451,11 +451,12 @@ export const BINDINGS = Object.freeze([
         display_name: '隐患检测',
         base_url_env: 'DIFY_API_BASE_URL',
         api_key_env: 'DIFY_API_KEY_HAZARD',
-        endpoint_kind: 'workflow',
+        // 旧执行体是 chat-messages（chatflow，图片走 files 参数），2026-09-19 实测修正
+        endpoint_kind: 'chat',
         version: '1.0',
         timeout_ms: 180000,
         status: 'active',
-        note: '该绑定只有专属密钥（DIFY_API_KEY_HAZARD），地址复用全局 DIFY_API_BASE_URL',
+        note: '该绑定只有专属密钥（DIFY_API_KEY_HAZARD），地址复用全局 DIFY_API_BASE_URL；kind=chat 与旧 dify-detect 的 chat-messages 对齐',
     },
 
     // ── 企业知识 ──────────────────────────────────────────────

@@ -64,7 +64,10 @@ export async function execute(config, skill, standardInput = {}) {
                 user,
                 trace_id: traceId,
             });
-            uploaded.push({ type: f.type || 'document', transfer_method: 'local_file', upload_file_id: r.id });
+            // 图片类暂存文件映射为 Dify 的 image 类型（隐患检测等图片型技能依赖）
+            const fType = f.type
+                || (String(f.mimeType || '').startsWith('image/') ? 'image' : 'document');
+            uploaded.push({ type: fType, transfer_method: 'local_file', upload_file_id: r.id });
         }
 
         // ── 2. 按执行模式分流 ────────────────────────────────────
