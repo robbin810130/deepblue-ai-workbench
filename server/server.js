@@ -1126,9 +1126,46 @@ app.use('/api/generate-image', coreServicesLimiter);
 
 // --- 自动执行 DDL（幂等，首次启动时建表/加字段）---
 async function runInitDDL() {
+    // XO-07：按语句幂等容错——单条失败（如依赖表未建）不中断整体初始化；读类失败按空结果降级
+    const safeDDL = async (label, fn) => {
+        try {
+            return await fn();
+        } catch (e) {
+            logger.warn(`[DDL][容错跳过] ${label}: ${e.message}`);
+            return { rows: [], rowCount: 0 };
+        }
+    };
+
     try {
-        await pool.query(`ALTER TABLE sys_users ADD COLUMN IF NOT EXISTS department VARCHAR(100) DEFAULT ''`);
-        await pool.query(`
+        // ── XO-07 根基修复：sys_users / sys_roles 为全库 FK 与权限判定根基（历史手工表，
+//    仓库从未有 DDL，全新部署会连锁失败）——补齐建表使全新环境自洽 ──
+        await safeDDL('ddl#0a', () => pool.query(`
+            CREATE TABLE IF NOT EXISTS sys_users (
+                id            SERIAL PRIMARY KEY,
+                username      VARCHAR(80) UNIQUE NOT NULL,
+                password_hash VARCHAR(255) NOT NULL,
+                display_name  VARCHAR(120) DEFAULT '',
+                email         VARCHAR(160) DEFAULT '',
+                role          VARCHAR(40)  DEFAULT 'user',
+                is_active     BOOLEAN DEFAULT TRUE,
+                avatar_url    TEXT,
+                department    VARCHAR(100) DEFAULT '',
+                last_login_at TIMESTAMPTZ,
+                created_at    TIMESTAMPTZ DEFAULT NOW()
+            )
+        `));
+        await safeDDL('ddl#0b', () => pool.query(`
+            CREATE TABLE IF NOT EXISTS sys_roles (
+                id           SERIAL PRIMARY KEY,
+                name         VARCHAR(80) UNIQUE NOT NULL,
+                display_name VARCHAR(120) DEFAULT '',
+                is_builtin   BOOLEAN DEFAULT FALSE,
+                permissions  JSONB DEFAULT '[]'::jsonb,
+                created_at   TIMESTAMPTZ DEFAULT NOW()
+            )
+        `));
+        await safeDDL('ddl#1', () => pool.query(`ALTER TABLE sys_users ADD COLUMN IF NOT EXISTS department VARCHAR(100) DEFAULT ''`));
+        await safeDDL('ddl#2', () => pool.query(`
             CREATE TABLE IF NOT EXISTS sys_user_sessions (
                 id          SERIAL PRIMARY KEY,
                 user_id     INTEGER NOT NULL REFERENCES sys_users(id) ON DELETE CASCADE,
@@ -1140,10 +1177,10 @@ async function runInitDDL() {
                 revoked     BOOLEAN DEFAULT FALSE,
                 revoked_at  TIMESTAMPTZ
             )
-        `);
+        `));
 
         // 商品品牌字典表（用于增强型动态脱敏）
-        await pool.query(`
+        await safeDDL('ddl#3', () => pool.query(`
             CREATE TABLE IF NOT EXISTS brand_dictionary (
                 id          SERIAL PRIMARY KEY,
                 brand_name  VARCHAR(255) UNIQUE NOT NULL,
@@ -1151,10 +1188,10 @@ async function runInitDDL() {
                 status      VARCHAR(20) DEFAULT 'ACTIVE',
                 created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-        `);
+        `));
 
         // 资质大类自定义分类表
-        await pool.query(`
+        await safeDDL('ddl#4', () => pool.query(`
             CREATE TABLE IF NOT EXISTS sys_qual_categories (
                 id          SERIAL PRIMARY KEY,
                 parent_type VARCHAR(50) NOT NULL,
@@ -1162,10 +1199,10 @@ async function runInitDDL() {
                 created_at  TIMESTAMPTZ DEFAULT NOW(),
                 UNIQUE(parent_type, name)
             )
-        `);
+        `));
 
         // 资质信息表 (Qualification Management)
-        await pool.query(`
+        await safeDDL('ddl#5', () => pool.query(`
             CREATE TABLE IF NOT EXISTS sys_qualifications (
                 id              VARCHAR(64) PRIMARY KEY,
                 emp_id          INTEGER REFERENCES sys_users(id) ON DELETE CASCADE,
@@ -1184,21 +1221,21 @@ async function runInitDDL() {
                 created_at      TIMESTAMPTZ DEFAULT NOW(),
                 updated_at      TIMESTAMPTZ DEFAULT NOW()
             )
-        `);
+        `));
         // 兼容已有数据结构调整
-        await pool.query(`ALTER TABLE sys_qualifications ALTER COLUMN emp_id DROP NOT NULL`).catch(() => { });
-        await pool.query(`ALTER TABLE sys_qualifications ADD COLUMN IF NOT EXISTS parent_type VARCHAR(50) DEFAULT 'EMP'`).catch(() => { });
-        await pool.query(`ALTER TABLE sys_qualifications ADD COLUMN IF NOT EXISTS category_id INTEGER REFERENCES sys_qual_categories(id) ON DELETE SET NULL`).catch(() => { });
+        await safeDDL('ddl#6', () => pool.query(`ALTER TABLE sys_qualifications ALTER COLUMN emp_id DROP NOT NULL`)).catch(() => { });
+        await safeDDL('ddl#7', () => pool.query(`ALTER TABLE sys_qualifications ADD COLUMN IF NOT EXISTS parent_type VARCHAR(50) DEFAULT 'EMP'`)).catch(() => { });
+        await safeDDL('ddl#8', () => pool.query(`ALTER TABLE sys_qualifications ADD COLUMN IF NOT EXISTS category_id INTEGER REFERENCES sys_qual_categories(id) ON DELETE SET NULL`)).catch(() => { });
 
         // 【迁移逻辑】将原有按人分组的内容（EMP）正式更名为 PRODUCT 类型内容
-        await pool.query(`UPDATE sys_qualifications SET parent_type = 'PRODUCT' WHERE parent_type = 'EMP'`);
+        await safeDDL('ddl#9', () => pool.query(`UPDATE sys_qualifications SET parent_type = 'PRODUCT' WHERE parent_type = 'EMP'`));
 
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_qualifications_emp_id ON sys_qualifications(emp_id)`);
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sys_user_sessions(user_id)`);
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_jti     ON sys_user_sessions(jti)`);
+        await safeDDL('ddl#10', () => pool.query(`CREATE INDEX IF NOT EXISTS idx_qualifications_emp_id ON sys_qualifications(emp_id)`));
+        await safeDDL('ddl#11', () => pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sys_user_sessions(user_id)`));
+        await safeDDL('ddl#12', () => pool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_jti     ON sys_user_sessions(jti)`));
 
         // 会议纪要持久化表 [NEW]
-        await pool.query(`
+        await safeDDL('ddl#13', () => pool.query(`
             CREATE TABLE IF NOT EXISTS sys_meeting_minutes (
                 id              VARCHAR(64) PRIMARY KEY,
                 user_id         INTEGER REFERENCES sys_users(id) ON DELETE CASCADE,
@@ -1207,11 +1244,11 @@ async function runInitDDL() {
                 minutes_text    TEXT,
                 created_at      TIMESTAMPTZ DEFAULT NOW()
             )
-        `);
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_meeting_minutes_user_id ON sys_meeting_minutes(user_id)`);
+        `));
+        await safeDDL('ddl#14', () => pool.query(`CREATE INDEX IF NOT EXISTS idx_meeting_minutes_user_id ON sys_meeting_minutes(user_id)`));
 
         // 文档起草持久化表 [NEW]
-        await pool.query(`
+        await safeDDL('ddl#15', () => pool.query(`
             CREATE TABLE IF NOT EXISTS sys_doc_drafting (
                 id              VARCHAR(64) PRIMARY KEY,
                 user_id         INTEGER REFERENCES sys_users(id) ON DELETE CASCADE,
@@ -1221,11 +1258,11 @@ async function runInitDDL() {
                 result_text     TEXT,
                 created_at      TIMESTAMPTZ DEFAULT NOW()
             )
-        `);
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_doc_drafting_user_id ON sys_doc_drafting(user_id)`);
+        `));
+        await safeDDL('ddl#16', () => pool.query(`CREATE INDEX IF NOT EXISTS idx_doc_drafting_user_id ON sys_doc_drafting(user_id)`));
 
         // 操作审计日志表初始化 (PostgreSQL 语法)
-        await pool.query(`
+        await safeDDL('ddl#17', () => pool.query(`
             CREATE TABLE IF NOT EXISTS sys_audit_logs (
                 id          SERIAL PRIMARY KEY,
                 user_id     INTEGER REFERENCES sys_users(id) ON DELETE SET NULL,
@@ -1239,12 +1276,12 @@ async function runInitDDL() {
                 user_agent  TEXT,
                 created_at  TIMESTAMPTZ DEFAULT NOW()
             )
-        `);
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_created_at ON sys_audit_logs(created_at)`);
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_username   ON sys_audit_logs(username)`);
+        `));
+        await safeDDL('ddl#18', () => pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_created_at ON sys_audit_logs(created_at)`));
+        await safeDDL('ddl#19', () => pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_username   ON sys_audit_logs(username)`));
 
         // 美妆研发自定义配方版本持久化表 [NEW]
-        await pool.query(`
+        await safeDDL('ddl#20', () => pool.query(`
             CREATE TABLE IF NOT EXISTS sys_beauty_rnd_versions (
                 id SERIAL PRIMARY KEY,
                 conversation_id VARCHAR(64) NOT NULL,
@@ -1255,11 +1292,11 @@ async function runInitDDL() {
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 UNIQUE(conversation_id, version_id)
             )
-        `);
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_beauty_rnd_conv_id ON sys_beauty_rnd_versions(conversation_id)`);
+        `));
+        await safeDDL('ddl#21', () => pool.query(`CREATE INDEX IF NOT EXISTS idx_beauty_rnd_conv_id ON sys_beauty_rnd_versions(conversation_id)`));
 
         // 用户通知表 (System Notifications)
-        await pool.query(`
+        await safeDDL('ddl#22', () => pool.query(`
             CREATE TABLE IF NOT EXISTS sys_notifications (
                 id          VARCHAR(64) PRIMARY KEY,
                 user_id     INTEGER NOT NULL REFERENCES sys_users(id) ON DELETE CASCADE,
@@ -1271,13 +1308,13 @@ async function runInitDDL() {
                 created_at  TIMESTAMPTZ DEFAULT NOW(),
                 updated_at  TIMESTAMPTZ DEFAULT NOW()
             )
-        `);
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON sys_notifications(user_id)`);
+        `));
+        await safeDDL('ddl#23', () => pool.query(`CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON sys_notifications(user_id)`));
 
         logger.info('[DDL] 系统基础及审计日志表结构初始化完成 ✓');
 
         // --- 商品库录入历史记录表 ---
-        await pool.query(`
+        await safeDDL('ddl#24', () => pool.query(`
             CREATE TABLE IF NOT EXISTS product_entry_history (
                 id              SERIAL PRIMARY KEY,
                 file_names      TEXT NOT NULL,
@@ -1289,12 +1326,12 @@ async function runInitDDL() {
                 username        VARCHAR(100) DEFAULT 'unknown',
                 created_at      TIMESTAMPTZ DEFAULT NOW()
             )
-        `);
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_product_entry_history_created_at ON product_entry_history(created_at DESC)`);
+        `));
+        await safeDDL('ddl#25', () => pool.query(`CREATE INDEX IF NOT EXISTS idx_product_entry_history_created_at ON product_entry_history(created_at DESC)`));
         logger.info('[DDL] 商品库录入历史记录表初始化完成 ✓');
 
         // --- 选品策略会话表 ---
-        await pool.query(`
+        await safeDDL('ddl#26', () => pool.query(`
             CREATE TABLE IF NOT EXISTS sys_product_selection_conversations (
                 id                    SERIAL PRIMARY KEY,
                 user_id               INTEGER NOT NULL,
@@ -1303,12 +1340,12 @@ async function runInitDDL() {
                 created_at            TIMESTAMPTZ DEFAULT NOW(),
                 updated_at            TIMESTAMPTZ DEFAULT NOW()
             )
-        `);
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_ps_conv_user ON sys_product_selection_conversations(user_id)`);
+        `));
+        await safeDDL('ddl#27', () => pool.query(`CREATE INDEX IF NOT EXISTS idx_ps_conv_user ON sys_product_selection_conversations(user_id)`));
         logger.info('[DDL] 选品策略会话表初始化完成 ✓');
 
         // --- 选品策略消息表 ---
-        await pool.query(`
+        await safeDDL('ddl#28', () => pool.query(`
             CREATE TABLE IF NOT EXISTS sys_product_selection_messages (
                 id              SERIAL PRIMARY KEY,
                 conversation_id INTEGER NOT NULL,
@@ -1318,16 +1355,16 @@ async function runInitDDL() {
                 stopped         BOOLEAN DEFAULT FALSE,
                 created_at      TIMESTAMPTZ DEFAULT NOW()
             )
-        `);
-        await pool.query(`CREATE INDEX IF NOT EXISTS idx_ps_msg_conv ON sys_product_selection_messages(conversation_id)`);
+        `));
+        await safeDDL('ddl#29', () => pool.query(`CREATE INDEX IF NOT EXISTS idx_ps_msg_conv ON sys_product_selection_messages(conversation_id)`));
         // 兼容已有表：补充 stopped 列
-        await pool.query(`
+        await safeDDL('ddl#30', () => pool.query(`
             DO $$ BEGIN
                 IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'sys_product_selection_messages' AND column_name = 'stopped') THEN
                     ALTER TABLE sys_product_selection_messages ADD COLUMN stopped BOOLEAN DEFAULT FALSE;
                 END IF;
             END $$
-        `);
+        `));
         logger.info('[DDL] 选品策略消息表初始化完成 ✓');
 
         // --- 发票校验历史记录表 ---
@@ -1335,7 +1372,7 @@ async function runInitDDL() {
             const invoiceSqlPath = path.join(__dirname, '../database/create_invoice_verify_table.sql');
             if (fs.existsSync(invoiceSqlPath)) {
                 const invoiceSql = fs.readFileSync(invoiceSqlPath, 'utf8');
-                await pool.query(invoiceSql);
+                await safeDDL('ddl#31', () => pool.query(invoiceSql));
                 logger.info('[DDL] 发票校验历史记录表初始化完成 ✓');
             } else {
                 logger.warn('[DDL] 未找到发票校验 SQL 脚本，跳过初始化');
@@ -1349,7 +1386,7 @@ async function runInitDDL() {
             const sqlPath = path.join(__dirname, '../database/create_mock_quote_tables.sql');
             if (fs.existsSync(sqlPath)) {
                 const sqlContent = fs.readFileSync(sqlPath, 'utf8');
-                await pool.query(sqlContent);
+                await safeDDL('ddl#32', () => pool.query(sqlContent));
                 logger.info('[DDL] 物料报价 Mock 数据表及种子记录初始化完成 ✓');
             } else {
                 logger.warn('[DDL] 未找到物料报价 Mock SQL 脚本，跳过初始化');
@@ -1363,18 +1400,18 @@ async function runInitDDL() {
             const tenderSqlPath = path.join(__dirname, '../database/create_tender_results.sql');
             if (fs.existsSync(tenderSqlPath)) {
                 const tenderSql = fs.readFileSync(tenderSqlPath, 'utf8');
-                await pool.query(tenderSql);
+                await safeDDL('ddl#33', () => pool.query(tenderSql));
                 // 兼容已有表：新增 bid_id 字段
-                await pool.query("ALTER TABLE sys_tender_results ADD COLUMN IF NOT EXISTS bid_id VARCHAR(200) DEFAULT ''");
-                await pool.query("ALTER TABLE sys_tender_results ADD COLUMN IF NOT EXISTS bid_no VARCHAR(200) DEFAULT ''");
-                await pool.query("ALTER TABLE sys_tender_results ADD COLUMN IF NOT EXISTS bid_type INTEGER DEFAULT 0");
-                await pool.query("ALTER TABLE sys_tender_results ADD COLUMN IF NOT EXISTS bid_process INTEGER DEFAULT 0");
-                await pool.query("ALTER TABLE sys_tender_results ADD COLUMN IF NOT EXISTS candidate_names JSONB DEFAULT '[]'::jsonb");
-                await pool.query("ALTER TABLE sys_tender_results ADD COLUMN IF NOT EXISTS winning_company VARCHAR(500) DEFAULT ''");
-                await pool.query("ALTER TABLE sys_tender_results ADD COLUMN IF NOT EXISTS winning_amount VARCHAR(200) DEFAULT ''");
-                await pool.query("ALTER TABLE sys_tender_results ADD COLUMN IF NOT EXISTS announcement_date VARCHAR(100) DEFAULT ''");
-                await pool.query("ALTER TABLE sys_tender_results ADD COLUMN IF NOT EXISTS synced_at TIMESTAMPTZ");
-                await pool.query("ALTER TABLE sys_tender_results ADD COLUMN IF NOT EXISTS sync_status VARCHAR(100) DEFAULT ''");
+                await safeDDL('ddl#34', () => pool.query("ALTER TABLE sys_tender_results ADD COLUMN IF NOT EXISTS bid_id VARCHAR(200) DEFAULT ''"));
+                await safeDDL('ddl#35', () => pool.query("ALTER TABLE sys_tender_results ADD COLUMN IF NOT EXISTS bid_no VARCHAR(200) DEFAULT ''"));
+                await safeDDL('ddl#36', () => pool.query("ALTER TABLE sys_tender_results ADD COLUMN IF NOT EXISTS bid_type INTEGER DEFAULT 0"));
+                await safeDDL('ddl#37', () => pool.query("ALTER TABLE sys_tender_results ADD COLUMN IF NOT EXISTS bid_process INTEGER DEFAULT 0"));
+                await safeDDL('ddl#38', () => pool.query("ALTER TABLE sys_tender_results ADD COLUMN IF NOT EXISTS candidate_names JSONB DEFAULT '[]'::jsonb"));
+                await safeDDL('ddl#39', () => pool.query("ALTER TABLE sys_tender_results ADD COLUMN IF NOT EXISTS winning_company VARCHAR(500) DEFAULT ''"));
+                await safeDDL('ddl#40', () => pool.query("ALTER TABLE sys_tender_results ADD COLUMN IF NOT EXISTS winning_amount VARCHAR(200) DEFAULT ''"));
+                await safeDDL('ddl#41', () => pool.query("ALTER TABLE sys_tender_results ADD COLUMN IF NOT EXISTS announcement_date VARCHAR(100) DEFAULT ''"));
+                await safeDDL('ddl#42', () => pool.query("ALTER TABLE sys_tender_results ADD COLUMN IF NOT EXISTS synced_at TIMESTAMPTZ"));
+                await safeDDL('ddl#43', () => pool.query("ALTER TABLE sys_tender_results ADD COLUMN IF NOT EXISTS sync_status VARCHAR(100) DEFAULT ''"));
                 logger.info('[DDL] 招标检索结果表初始化完成 ✓');
             }
         } catch (tenderErr) {
@@ -1386,7 +1423,7 @@ async function runInitDDL() {
             const kaSqlPath = path.join(__dirname, '../database/create_key_account_tables.sql');
             if (fs.existsSync(kaSqlPath)) {
                 const kaSql = fs.readFileSync(kaSqlPath, 'utf8');
-                await pool.query(kaSql);
+                await safeDDL('ddl#44', () => pool.query(kaSql));
                 logger.info('[DDL] 大客户档案表初始化完成 ✓');
             }
         } catch (kaErr) {
@@ -1398,7 +1435,7 @@ async function runInitDDL() {
             const bidSqlPath = path.join(__dirname, '../database/create_bid_assistant_tables.sql');
             if (fs.existsSync(bidSqlPath)) {
                 const bidSql = fs.readFileSync(bidSqlPath, 'utf8');
-                await pool.query(bidSql);
+                await safeDDL('ddl#45', () => pool.query(bidSql));
                 logger.info('[DDL] 投标助手模块表初始化完成 ✓');
             }
         } catch (bidErr) {
@@ -1410,7 +1447,7 @@ async function runInitDDL() {
             const reviewSqlPath = path.join(__dirname, '../database/create_review_ad_zone_table.sql');
             if (fs.existsSync(reviewSqlPath)) {
                 const reviewSql = fs.readFileSync(reviewSqlPath, 'utf8');
-                await pool.query(reviewSql);
+                await safeDDL('ddl#46', () => pool.query(reviewSql));
                 logger.info('[DDL] 复盘搭子-广告专区表初始化完成 ✓');
             }
         } catch (reviewErr) {
@@ -1422,7 +1459,7 @@ async function runInitDDL() {
             const mpSqlPath = path.join(__dirname, '../database/create_review_mini_program_table.sql');
             if (fs.existsSync(mpSqlPath)) {
                 const mpSql = fs.readFileSync(mpSqlPath, 'utf8');
-                await pool.query(mpSql);
+                await safeDDL('ddl#47', () => pool.query(mpSql));
                 logger.info('[DDL] 复盘搭子-小程序访问情况表初始化完成 ✓');
             }
         } catch (mpErr) {
@@ -1434,7 +1471,7 @@ async function runInitDDL() {
             const opSqlPath = path.join(__dirname, '../database/create_review_order_page_table.sql');
             if (fs.existsSync(opSqlPath)) {
                 const opSql = fs.readFileSync(opSqlPath, 'utf8');
-                await pool.query(opSql);
+                await safeDDL('ddl#48', () => pool.query(opSql));
                 logger.info('[DDL] 复盘搭子-点餐聚合页情况表初始化完成 ✓');
             }
         } catch (opErr) {
@@ -1446,7 +1483,7 @@ async function runInitDDL() {
             const txSqlPath = path.join(__dirname, '../database/create_review_transaction_table.sql');
             if (fs.existsSync(txSqlPath)) {
                 const txSql = fs.readFileSync(txSqlPath, 'utf8');
-                await pool.query(txSql);
+                await safeDDL('ddl#49', () => pool.query(txSql));
                 logger.info('[DDL] 复盘搭子-交易情况表初始化完成 ✓');
             }
         } catch (txErr) {
@@ -1458,7 +1495,7 @@ async function runInitDDL() {
             const lgSqlPath = path.join(__dirname, '../database/create_logistics_config_table.sql');
             if (fs.existsSync(lgSqlPath)) {
                 const lgSql = fs.readFileSync(lgSqlPath, 'utf8');
-                await pool.query(lgSql);
+                await safeDDL('ddl#50', () => pool.query(lgSql));
                 logger.info('[DDL] 物流费计算配置表初始化完成 ✓');
             }
         } catch (lgErr) {
@@ -1470,14 +1507,14 @@ async function runInitDDL() {
             const pkgSqlPath = path.join(__dirname, '../database/create_packaging_table.sql');
             if (fs.existsSync(pkgSqlPath)) {
                 const pkgSql = fs.readFileSync(pkgSqlPath, 'utf8');
-                await pool.query(pkgSql);
+                await safeDDL('ddl#51', () => pool.query(pkgSql));
                 // 兼容旧表：补充 name / attribute / weight 字段
-                await pool.query(`
+                await safeDDL('ddl#52', () => pool.query(`
                     ALTER TABLE sys_logistics_packaging
                     ADD COLUMN IF NOT EXISTS name VARCHAR(100) NOT NULL DEFAULT '',
                     ADD COLUMN IF NOT EXISTS attribute VARCHAR(50) NOT NULL DEFAULT '',
                     ADD COLUMN IF NOT EXISTS weight NUMERIC(10,3) NOT NULL DEFAULT 0
-                `);
+                `));
                 logger.info('[DDL] 物流耗材数据表初始化完成 ✓');
             }
         } catch (pkgErr) {
@@ -1489,7 +1526,7 @@ async function runInitDDL() {
             const planSqlPath = path.join(__dirname, '../database/create_packaging_plan_table.sql');
             if (fs.existsSync(planSqlPath)) {
                 const planSql = fs.readFileSync(planSqlPath, 'utf8');
-                await pool.query(planSql);
+                await safeDDL('ddl#53', () => pool.query(planSql));
                 logger.info('[DDL] 打包方案统一表初始化完成 ✓');
             }
         } catch (planErr) {
@@ -1501,7 +1538,7 @@ async function runInitDDL() {
             const eqSqlPath = path.join(__dirname, '../database/create_enterprise_qualification_tables.sql');
             if (fs.existsSync(eqSqlPath)) {
                 const eqSql = fs.readFileSync(eqSqlPath, 'utf8');
-                await pool.query(eqSql);
+                await safeDDL('ddl#54', () => pool.query(eqSql));
                 logger.info('[DDL] 企业资质库模块表初始化完成 ✓');
             }
         } catch (eqErr) {
