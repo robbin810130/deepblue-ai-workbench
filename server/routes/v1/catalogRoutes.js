@@ -116,12 +116,18 @@ router.get(
                 trace_id: req.trace_id,
             });
         }
-        // M6 先行版：基于旧版 sys_roles.permissions（appId 数组）真实判定；
-        // 无映射/数据不可读时诚实返回 not_evaluated（见 permissions/evaluator.js）
+        // M6 完整版：技能级显式授权优先 → 旧版映射回落 → 诚实 not_evaluated
+        // （判定链见 permissions/evaluator.js；source 标明判定来源）
         const permission = await evaluateSkillPermission(skill, req.user);
         return sendOk(
             res,
-            { ...toApiShape(skill), permission_status: permission.status, permission_status_reason: permission.reason },
+            {
+                ...toApiShape(skill),
+                permission_status: permission.status,
+                permission_status_reason: permission.reason,
+                permission_source: permission.source || null,
+                permission_data_scope: permission.data_scope || null,
+            },
             { trace_id: req.trace_id, meta: { request_time_ms: elapsed() } },
         );
     }),

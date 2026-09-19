@@ -32,6 +32,7 @@ import catalogRoutesV1 from './routes/v1/catalogRoutes.js'; // /api/v1 场景与
 import taskRoutesV1 from './routes/v1/taskRoutes.js'; // /api/v1 任务中心接口（文档 05 PRD）
 import fileRoutesV1 from './routes/v1/fileRoutes.js'; // /api/v1 文件暂存与签名下载（M4，PRD §7/§9）
 import notificationRoutesV1 from './routes/v1/notificationRoutes.js'; // /api/v1 通知与待办（M4，PRD §8）
+import permissionRoutesV1 from './routes/v1/permissionRoutes.js'; // /api/v1 技能级授权管理（M6 完整版，文档 06）
 import { v1ErrorHandler } from './modules/common/apiResponse.js'; // v1 标准响应/错误模型（文档 03 §2–§3）
 import { analyzeMaterialQuote } from './services/pricingAnalysisService.js';
 import { difyKnowledgeService } from './services/difyKnowledgeService.js';
@@ -274,6 +275,7 @@ app.use('/api/v1', catalogRoutesV1);
 app.use('/api/v1', taskRoutesV1); // 任务中心（M3，PRD 05）
 app.use('/api/v1', fileRoutesV1); // 文件暂存与签名下载（M4，PRD §7/§9）
 app.use('/api/v1', notificationRoutesV1); // 通知与待办（M4，PRD §8）
+app.use('/api/v1', permissionRoutesV1); // 技能级授权管理（M6 完整版，文档 06）
 app.use('/api/v1', v1ErrorHandler()); // v1 专用错误翻译（文档 03 §3）
 
 // ============================================================

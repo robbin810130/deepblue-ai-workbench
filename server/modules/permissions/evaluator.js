@@ -1,20 +1,18 @@
 /**
- * 权限判定（M6 先行版）
+ * 权限判定（M6 完整版）
  *
- * 当前权限模型：sys_roles.permissions（旧版 appId 数组，'*' 全量）。
- * 文档 06 要求迁移到 permission_code + 数据范围 —— 那需要技能表接管权限语义（M6 完整版）。
- *
- * 先行版策略（诚实三态，绝不假装已判定）：
- *   granted        角色权限含 '*' 或该技能映射的旧版 appId → 可以执行
- *   denied         角色权限明确存在但不含该 appId → 不可执行
- *   not_evaluated  ①技能无旧版映射（幽灵技能/纯新增）②角色或权限数据不可读 → 不判定，
- *                  放行到任务创建的访问控制层（M3 已保证：仅本人/被分配人/admin 可见任务）
+ * 判定链（自上而下，首个命中即返回）：
+ *   1. admin 一律放行（与存量 requireModulePermission 同口径）
+ *   2. sys_skill_permissions 显式授权（M6 完整版：permission_code 语义 + data_scope）
+ *      —— granted=true → granted；granted=false → denied（显式拒绝优先）
+ *   3. 旧版 sys_roles.permissions（appId 数组，'*' 全量）—— 存量角色无感回落
+ *   4. 以上皆无 → not_evaluated（诚实三态，绝不假装已判定）
  *
  * 映射来源：src/config/appRegistry.ts 的 36 个旧版应用（id ↔ label 逐一对照技能名）。
- * 幽灵技能（live:false，未在旧系统注册）无映射 —— 开放时在旧权限系统补 appId 后填入。
  */
 
 import pool from '../../db.js';
+import { getExplicit } from './skillPermissionStore.js';
 
 /** skill_key → 旧版权限 appId */
 export const LEGACY_APP_MAP = Object.freeze({
@@ -77,19 +75,46 @@ async function getRolePermissions(roleName) {
  * 判定用户能否执行某技能。
  * @param {object} skill 技能清单条目
  * @param {{id:number, role?:string}} user JWT 载荷
- * @returns {Promise<{status:'granted'|'denied'|'not_evaluated', reason:string}>}
+ * @returns {Promise<{status:'granted'|'denied'|'not_evaluated', reason:string, data_scope?:string, source?:string}>}
  */
 export async function evaluateSkillPermission(skill, user) {
-    // admin 一律放行（与存量 requireModulePermission 同口径）
+    // 1. admin 一律放行
     if (user?.role === 'admin') {
-        return { status: 'granted', reason: '管理员角色' };
+        return { status: 'granted', reason: '管理员角色', source: 'admin' };
     }
 
-    const appId = LEGACY_APP_MAP[skill?.skill_key];
+    const skillKey = skill?.skill_key;
+
+    // 2. M6 完整版：技能级显式授权（命中即返回，拒绝优先）
+    if (skillKey && user?.role) {
+        try {
+            const explicit = await getExplicit(skillKey, user.role);
+            if (explicit) {
+                return explicit.granted
+                    ? {
+                        status: 'granted',
+                        reason: `技能级授权已授予角色「${user.role}」`,
+                        data_scope: explicit.data_scope,
+                        source: 'skill_permission',
+                    }
+                    : {
+                        status: 'denied',
+                        reason: `技能级授权显式拒绝角色「${user.role}」`,
+                        data_scope: explicit.data_scope,
+                        source: 'skill_permission',
+                    };
+            }
+        } catch {
+            // 授权表不可读 → 继续回落旧版链，不误伤
+        }
+    }
+
+    // 3. 旧版映射回落
+    const appId = LEGACY_APP_MAP[skillKey];
     if (!appId) {
         return {
             status: 'not_evaluated',
-            reason: '技能未登记旧版权限映射（M6 技能表接管后启用精确判定）',
+            reason: '技能级授权未配置，且技能未登记旧版权限映射（访问控制由任务归属保证）',
         };
     }
 
@@ -102,7 +127,7 @@ export async function evaluateSkillPermission(skill, user) {
     }
 
     if (perms.includes('*') || perms.includes(appId)) {
-        return { status: 'granted', reason: `角色「${user.role}」已授予旧版模块 ${appId}` };
+        return { status: 'granted', reason: `角色「${user.role}」已授予旧版模块 ${appId}`, source: 'legacy_app' };
     }
-    return { status: 'denied', reason: `角色「${user.role}」未授予旧版模块 ${appId}` };
+    return { status: 'denied', reason: `角色「${user.role}」未授予旧版模块 ${appId}`, source: 'legacy_app' };
 }

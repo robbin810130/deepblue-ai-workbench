@@ -259,6 +259,52 @@ async function main() {
         check('24. 全部已读后未读数归零', json?.data?.unread === 0, `unread=${json?.data?.unread}`);
     }
 
+    // ── F. M6 完整版：技能级授权 ─────────────────────────────
+    {
+        // 非管理员写操作必须被拦
+        const { status } = await api('PUT', '/api/v1/permissions/skills/contract_review', {
+            body: { role_name: 'user', granted: true },
+        });
+        check('25. 非管理员设置授权 → 403', status === 403, String(status));
+    }
+    {
+        // admin 授予 user 角色显式授权（含数据范围）
+        const { json } = await api('PUT', '/api/v1/permissions/skills/contract_review', {
+            token: ADMIN_TOKEN,
+            body: { role_name: 'user', granted: true, data_scope: 'dept' },
+        });
+        check('26. admin 显式授权成功（data_scope=dept）',
+            json?.success && json.data?.granted === true && json.data?.data_scope === 'dept', json?.data?.updated_at);
+    }
+    {
+        // 用户视角判定走 skill_permission 来源
+        const { json } = await api('GET', '/api/v1/skills/contract_review');
+        check('27. 判定命中显式授权（granted / source=skill_permission）',
+            json?.data?.permission_status === 'granted' && json?.data?.permission_source === 'skill_permission',
+            `${json?.data?.permission_status}/${json?.data?.permission_source}`);
+    }
+    {
+        // 显式拒绝优先
+        await api('PUT', '/api/v1/permissions/skills/contract_review', {
+            token: ADMIN_TOKEN,
+            body: { role_name: 'user', granted: false },
+        });
+        const { json } = await api('GET', '/api/v1/skills/contract_review');
+        check('28. 显式拒绝 → denied', json?.data?.permission_status === 'denied', json?.data?.permission_status);
+        // 清除后回落旧版链（smoke 环境无 sys_roles 记录 → not_evaluated）
+        await api('DELETE', '/api/v1/permissions/skills/contract_review?role=user', { token: ADMIN_TOKEN });
+        const { json: j2 } = await api('GET', '/api/v1/skills/contract_review');
+        check('29. 清除授权回落旧版链（not_evaluated）',
+            j2?.data?.permission_status === 'not_evaluated', j2?.data?.permission_status);
+    }
+    {
+        // 授权视图：admin 查 user 角色全技能视图
+        const { json } = await api('GET', '/api/v1/permissions/skills?role=user', { token: ADMIN_TOKEN });
+        check('30. 授权视图覆盖全部 live 技能',
+            json?.success && json.data.length >= 30 && json.data.every((r) => r.status),
+            `${json?.data?.length} 条`);
+    }
+
     await pool.end();
 
     // ── 汇总 ─────────────────────────────────────────────────
