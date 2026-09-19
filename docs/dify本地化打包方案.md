@@ -131,3 +131,20 @@ DIFY_CONSOLE_EMAIL=... DIFY_CONSOLE_PASSWORD=... \
 | 知识库导入自动分段test | 0 | 0 | 空库 |
 
 全部 high_quality + 通义 multimodal-embedding-v1 → 打包必须含 tongyi 插件与 embedding 凭据。
+
+### ④ 缺失 10 个 key 的影响评估（2026-09-19 定论：无阻塞）
+
+老大确认 Windows 生产 .env 无法获取。**证据链**（api_tokens.last_used_at 活指纹 + 老服务器 env 现状）：
+- 老服务器 env 里这 10 个绑定的值本来就是**空/PLACEHOLDER**（产品录入/选品/发票校验等 = 空，EQ 识别 = PLACEHOLDER）
+- 对应候选应用（选品工作流、小程序/交易/点餐聚合页数据整理、财务侧发票×2、中标结果查询等）**在源 Dify 上没有 api_token 或 token 从未被调用**
+- 结论：这 10 个绑定在源生产环境**本来就没启用**，Windows env 即使有值也不会有活跃调用痕迹
+
+**处置**：binding-map 里标为 `inactive`（含证据字段）。新设备 .env 对这些绑定留空——与源现状完全一致，交付功能零损失；后续要用时在设备 Dify 上现发 token 填入即可。
+
+**意外升级 2 个**：video_gen（DIFY_VIDEOGEN）、doc_copywriting（←DOC_DRAFTING 别名）在老 env 有真值，升级为 verified。最终：verified 32 / draft-high 3 / non-dify 1（ai_image）/ inactive 10 / 未知 0。
+
+### ⑤ 知识库随设备范围（老大已拍板：作废与空库不带）
+
+`dify-bundle/dataset-plan.json`：**9 带 6 排除**。
+- ✅ 随设备（9）：深蓝智能公司制度(21)、看板业务示例库(9)、法规test(6)、物料纠错记忆库(6)、智能研发演示test(4)、平台格式规范test(1)、物料编码(1)、东南亚美妆本地化词典test(1)、东南亚文化营销规则test(1)
+- ❌ 排除（6）：5 个「（作废）」+ 1 个空库（知识库导入自动分段test）

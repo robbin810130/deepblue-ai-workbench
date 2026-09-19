@@ -127,26 +127,33 @@ for (const b of BINDINGS) {
       entry.match = { app_id: best.app_id, app_name: best.app_name, confidence: best.score >= 70 ? 'draft-high' : 'draft-low', via: `name-match(${best.score})` };
     }
   }
+  // ③ 源环境未激活标注：老 env 空/PLACEHOLDER 且候选应用无 api_token 或 token 从未使用
+  if (!entry.match) {
+    entry.inactive = {
+      evidence: '老服务器 env 空/PLACEHOLDER + 源 Dify 无对应活跃 token（api_tokens 无记录或 last_used_at 为空）',
+      conclusion: '该绑定在源生产环境未启用（或经由其他通道）。新设备 .env 留空与现状一致，启用时现场发 token 即可。',
+    };
+  }
   results.push(entry);
 }
 
 const verified = results.filter((r) => r.match?.confidence === 'verified').length;
 const draftHigh = results.filter((r) => r.match?.confidence === 'draft-high').length;
 const draftLow = results.filter((r) => r.match?.confidence === 'draft-low').length;
-const unmapped = results.filter((r) => !r.match).length;
+const nonDify = results.filter((r) => r.match?.confidence === 'non-dify').length;
+const inactive = results.filter((r) => !r.match && r.inactive).length;
+const unmapped = results.filter((r) => !r.match && !r.inactive).length;
 
 fs.writeFileSync(ROOT + 'binding-map.json', JSON.stringify({
   generated_at: new Date().toISOString(),
-  note: 'verified=env值实测吻合; draft=名称匹配草案, 待源 .env join 后升级',
-  summary: { bindings: results.length, verified, draftHigh, draftLow, unmapped },
+  note: 'verified=env值实测吻合; draft=名称匹配草案; inactive=源环境未启用(证据见 inactive.evidence)',
+  summary: { bindings: results.length, verified, draftHigh, draftLow, nonDify, inactive, unmapped },
   tokens_total: tokenToApp.size,
   bindings: results,
 }, null, 2));
 
-console.log(`绑定 ${results.length}: verified=${verified} draft-high=${draftHigh} draft-low=${draftLow} 未映射=${unmapped}`);
-console.log('\n未映射/低置信:');
+console.log(`绑定 ${results.length}: verified=${verified} draft-high=${draftHigh} draft-low=${draftLow} non-dify=${nonDify} inactive=${inactive} 未映射=${unmapped}`);
+console.log('\ninactive（源环境未启用）:');
 for (const r of results) {
-  if (!r.match || r.match.confidence === 'draft-low') {
-    console.log(`  ${r.binding_key} (${r.display_name}) → ${r.match ? r.match.app_name + ' [low]' : '∅'}`);
-  }
+  if (r.inactive) console.log(`  ${r.binding_key} (${r.display_name})`);
 }
