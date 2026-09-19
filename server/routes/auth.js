@@ -6,7 +6,7 @@ import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { logger } from '../infra/logger.js';
-import { authenticateToken } from '../infra/auth.js';
+import { authenticateToken, JWT_SECRET } from '../infra/auth.js';
 import { logAudit } from '../infra/audit.js';
 import pool from '../db.js';
 
