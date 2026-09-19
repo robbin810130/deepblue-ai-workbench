@@ -64,9 +64,9 @@ export async function execute(config, skill, standardInput = {}) {
                 user,
                 trace_id: traceId,
             });
-            // 图片类暂存文件映射为 Dify 的 image 类型（隐患检测等图片型技能依赖）
-            const fType = f.type
-                || (String(f.mimeType || '').startsWith('image/') ? 'image' : 'document');
+            // 暂存文件 → Dify 文件类型映射（技能隐式依赖：隐患检测要 image、会议纪要要 audio、
+            // 视频生成要 video；不映射的话音频/视频会被当成 document，Dify 侧直接拒绝）
+            const fType = f.type || inferDifyFileType(f.mimeType, f.name);
             uploaded.push({ type: fType, transfer_method: 'local_file', upload_file_id: r.id });
         }
 
@@ -75,8 +75,14 @@ export async function execute(config, skill, standardInput = {}) {
         const kind = config.endpoint_kind;
 
         if (mode === 'chat' || kind === 'chat') {
+            const given = inputs.message || inputs.query || inputs.prompt || inputs.text || '';
+            // 有些技能（会议纪要）的输入全是文件/结构化字段，没有消息正文；
+            // chat-messages 的 query 不能为空，这里给一个可读的兜底指令，避免 400。
             const query =
-                inputs.message || inputs.query || inputs.prompt || inputs.text || '';
+                given ||
+                (uploaded.length
+                    ? `请处理上传的附件（${files.map((f) => f.name).filter(Boolean).join('、') || '附件'}），按「${skill?.name || '任务'}」的要求输出结果。`
+                    : '');
             const raw = await runChat(config, {
                 query,
                 inputs: stripChatInputs(inputs),
@@ -129,6 +135,21 @@ export async function execute(config, skill, standardInput = {}) {
 function stripChatInputs(inputs) {
     const { message, query, prompt, text, conversation_id, ...rest } = inputs || {};
     return rest;
+}
+
+/**
+ * 暂存文件 → Dify 文件类型
+ *
+ * Dify 的 files[].type 只认 image / document / audio / video，类型错了会被直接拒绝。
+ * 优先按 MIME 判定，MIME 缺失（application/octet-stream）时回退到扩展名。
+ */
+export function inferDifyFileType(mimeType = '', name = '') {
+    const mime = String(mimeType || '').toLowerCase();
+    const ext = String(name || '').toLowerCase().split('.').pop() || '';
+    if (mime.startsWith('image/') || ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'].includes(ext)) return 'image';
+    if (mime.startsWith('audio/') || ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'amr'].includes(ext)) return 'audio';
+    if (mime.startsWith('video/') || ['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext)) return 'video';
+    return 'document';
 }
 
 /** 查询运行状态（文档 04 §9 轮询） */

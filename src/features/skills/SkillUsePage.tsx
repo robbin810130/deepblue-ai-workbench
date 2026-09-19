@@ -23,9 +23,15 @@ interface UploadedFile {
   size_bytes: number;
 }
 
-/** 从 schema 的 format/enum 推断控件类型 */
+/**
+ * 从 schema 的 format/type 推断控件类型
+ *
+ * ⚠️ catalog 里所有文件型字段都写成 `{ type: 'string', format: 'binary' }`（JSON Schema 的
+ * 二进制约定），而不是 `format: 'file'`；两者都必须识别为文件上传，否则文件字段会退化成
+ * 文本框，发票校验 / 合同审核 / 会议纪要等 10+ 个技能在新 UI 下直接不可用。
+ */
 function widgetOf(f: ApiSkill['input_schema']['properties'][string]): 'textarea' | 'input' | 'select' | 'file' | 'number' {
-  if (f.type === 'file' || f.type === 'file_multi' || f.format === 'file') return 'file';
+  if (f.type === 'file' || f.type === 'file_multi' || f.format === 'file' || f.format === 'binary') return 'file';
   if (f.enum && f.enum.length > 0) return 'select';
   if (f.type === 'number' || f.type === 'integer') return 'number';
   if (f.format === 'textarea' || f.type === 'text') return 'textarea';
@@ -160,10 +166,20 @@ export function SkillUsePage() {
                     )}
                   >
                     <Upload size={13} /> {uploading ? '上传中…' : '选择文件'}
-                    <input type="file" className="hidden" onChange={(e) => upload(e.target.files)} multiple />
+                    <input
+                      type="file"
+                      className="hidden"
+                      multiple
+                      accept={skill.supported_files?.length ? skill.supported_files.join(',') : undefined}
+                      onChange={(e) => upload(e.target.files)}
+                    />
                   </label>
-                  {files.length > 0 && (
-                    <ul className="mt-2 space-y-1">
+                  {skill.supported_files && skill.supported_files.length > 0 && (
+                    <p className="mt-1 text-[11px] text-ink-faint">
+                      支持 {skill.supported_files.join(' / ')}
+                    </p>
+                  )}
+                  {files.length > 0 && (                    <ul className="mt-2 space-y-1">
                       {files.map((uf) => (
                         <li key={uf.file_id} className="flex items-center gap-2 text-caption text-ink-soft">
                           <span className="truncate">{uf.name}</span>
