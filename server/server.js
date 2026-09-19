@@ -4844,6 +4844,31 @@ app.post('/api/risk-detection/rnd/run', authenticateToken, async (req, res) => {
         const { country, industry, detectionType, ingredient_text, fileId } = req.body;
         logAudit(req, { module: 'RISK_DETECTION', action: 'RUN_RND_RISK', details: { country, industry, detectionType, hasText: !!ingredient_text, hasFile: !!fileId } });
 
+        // ── D4 试点迁移（TASK_CENTER_PILOT 含 risk_detection 时启用，scope=rnd）──────
+        // 文本模式直连；图片模式需新前端传平台暂存 file_ids（旧 fileId=Dify id 走旧路径）。
+        if (legacyBridge.isPilotSkill('risk_detection')
+            && (detectionType !== 'image' || Array.isArray(req.body?.file_ids))) {
+            try {
+                const q = ingredient_text || '请开始执行研发配方法规检测任务。';
+                const r = await legacyBridge.runThroughTaskCenter({
+                    skillKey: 'risk_detection',
+                    title: `研发风控检测：${String(country || industry || '配方检测').slice(0, 24)}`,
+                    user: req.user,
+                    inputs: { query: q, country: country || '', industry: industry || '', scene: 'rnd' },
+                    bindingScope: 'rnd',
+                    files: detectionType === 'image' ? req.body.file_ids.map(String) : [],
+                });
+                if (!r.ok) {
+                    console.error(`[研发风控-任务中心] ${r.taskNo} 失败 ${r.errorCode}: ${r.message}`);
+                    return res.status(500).json({ success: false, message: `任务执行失败（${r.taskNo}）：${r.message}` });
+                }
+                return res.json({ success: true, data: legacyBridge.stripThinkTags(legacyBridge.extractAnswer(r.outputs)) });
+            } catch (e) {
+                console.error('[研发风控-任务中心] 异常:', e.message);
+                return res.status(500).json({ success: false, message: e.message });
+            }
+        }
+
         const apiKey = process.env.DIFY_RND_RISK_API_KEY;
         let apiUrl = process.env.DIFY_RND_RISK_API_URL;
         if (apiUrl && !apiUrl.endsWith('/v1')) apiUrl = `${apiUrl.replace(/\/$/, '')}/v1`;
@@ -9338,6 +9363,30 @@ app.post('/api/quote-verify/run', authenticateToken, async (req, res) => {
 // 2. 核查报价 - 文件上传核查（工作流B）
 app.post('/api/quote-verify/upload', authenticateToken, upload.single('file'), async (req, res) => {
     try {
+
+        // ── D4 试点迁移（TASK_CENTER_PILOT 含 quote_verify 时启用，scope=file）────────
+        // 前端以 multipart 文本字段传平台暂存 file_ids（无需再传 file）；文件链路由
+        // Provider 依绑定 file_input_var=quote_file 映射进工作流B输入。
+        if (legacyBridge.isPilotSkill('quote_verify') && Array.isArray(req.body?.file_ids)) {
+            try {
+                const r = await legacyBridge.runThroughTaskCenter({
+                    skillKey: 'quote_verify',
+                    title: '核查报价（文件解析）',
+                    user: req.user,
+                    inputs: { query: '请解析报价单并执行核查' },
+                    bindingScope: 'file',
+                    files: req.body.file_ids.map(String),
+                });
+                if (!r.ok) {
+                    console.error(`[核查报价B-任务中心] ${r.taskNo} 失败 ${r.errorCode}: ${r.message}`);
+                    return res.status(500).json({ success: false, message: `任务执行失败（${r.taskNo}）：${r.message}` });
+                }
+                return res.json({ success: true, data: legacyBridge.stripThinkTags(legacyBridge.extractAnswer(r.outputs)) || '文件处理完成，未返回详细信息' });
+            } catch (e) {
+                console.error('[核查报价B-任务中心] 异常:', e.message);
+                return res.status(500).json({ success: false, message: e.message });
+            }
+        }
         if (!req.file) {
             return res.status(400).json({ success: false, message: '未找到文件数据' });
         }

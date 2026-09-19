@@ -68,6 +68,7 @@ export async function runThroughTaskCenter({
     inputs = {},
     files = [],
     autoConfirm = true,
+    bindingScope = null,
     timeoutMs = 600000,
     pollMs = 500,
 }) {
@@ -91,6 +92,7 @@ export async function runThroughTaskCenter({
         title: title || `${skill.name}（存量路由）`,
         inputs,
         files,
+        binding_scope: bindingScope || null,
         execute_now: true,
         user,
         assigned_to: null,

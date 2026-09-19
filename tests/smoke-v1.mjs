@@ -411,6 +411,10 @@ async function main() {
                 no: 48, key: 'business_dashboard', path: '/api/business-dashboard/chat', auth: true,
                 body: { query: '冒烟业务看板' },
             },
+            {
+                no: 49, key: 'risk_detection', path: '/api/risk-detection/rnd/run', auth: true,
+                body: { country: 'US', industry: '美妆', detectionType: 'text', ingredient_text: '冒烟研发风控' },
+            },
         ];
         // 造一个暂存文件供 hazard/contract 用
         const staged = await fetch(`${BASE}/api/v1/files/upload`, {
@@ -457,6 +461,39 @@ async function main() {
                 `http=${res.status} task=${t ? t.status : '无'} 事件=${evs.length} 通知=${okNotify ? '有' : '无'}`);
         }
     }
+
+        // 50. scope→binding 路由机制验证：49 建的任务应带 binding_scope=rnd，
+        //     且 task_runs.binding_key 应为 risk_detection.rnd（而非默认 risk_detection）
+        {
+            const { rows } = await pool.query(
+                `SELECT id, input->>'binding_scope' AS bs FROM tasks WHERE skill_key='risk_detection' ORDER BY created_at DESC LIMIT 1`,
+            );
+            const t = rows[0];
+            const { rows: runs } = await pool.query(
+                `SELECT binding_key FROM task_runs WHERE task_id=$1 ORDER BY id DESC LIMIT 1`, [t?.id],
+            );
+            check('50. scope→binding 路由（task.binding_scope=rnd + run.binding_key=risk_detection.rnd）',
+                t?.bs === 'rnd' && runs[0]?.binding_key === 'risk_detection.rnd',
+                `scope=${t?.bs} run_binding=${runs[0]?.binding_key}`);
+        }
+
+        // 51. quote_verify 未列入开关时，/api/quote-verify/upload 走旧路径守卫
+        //     （JSON 请求无文件 → 400 未找到文件数据，且不建「核查报价（文件解析）」任务）
+        {
+            const { rowCount: before } = await pool.query(
+                `SELECT 1 FROM tasks WHERE title='核查报价（文件解析）'`);
+            const res = await fetch(`${BASE}/api/quote-verify/upload`, {
+                method: 'POST',
+                headers: { Authorization: `Bearer ${ALICE_TOKEN}`, 'content-type': 'application/json' },
+                body: JSON.stringify({ file_ids: ['dummy'] }),
+            });
+            const j = await res.json().catch(() => ({}));
+            const { rowCount: after } = await pool.query(
+                `SELECT 1 FROM tasks WHERE title='核查报价（文件解析）'`);
+            check('51. quote_verify 开关关闭走旧路径（400+不建任务）',
+                res.status === 400 && /未找到文件数据/.test(j?.message || '') && after === before,
+                `http=${res.status} 任务数 ${before}→${after}`);
+        }
 
     await pool.end();
 

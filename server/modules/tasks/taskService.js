@@ -14,7 +14,7 @@
  */
 
 import { getSkill } from '../catalog/index.js';
-import { runSkill, resolveBinding } from '../providers/index.js';
+import { runSkill, resolveBinding, getBinding } from '../providers/index.js';
 import { newTraceId } from '../providers/difyClient.js';
 import { cancelRun } from '../providers/difyProvider.js';
 import { loadStagedBuffers, bindFilesToTask } from '../files/fileStore.js';
@@ -85,7 +85,7 @@ async function transition(task, toStatus, { runId = null, actor = 'system', deta
  * @param {{id:number,username?:string,name?:string,role?:string}} p.user
  * @param {number} [p.assigned_to]
  */
-export async function createTask({ skill_key, title, inputs = {}, files = [], execute_now = false, user, assigned_to = null }) {
+export async function createTask({ skill_key, title, inputs = {}, files = [], execute_now = false, user, assigned_to = null, binding_scope = null }) {
     const skill = getSkill(skill_key);
     if (!skill || skill.live === false) {
         const err = new Error(`技能不可用：${skill_key}`);
@@ -101,12 +101,23 @@ export async function createTask({ skill_key, title, inputs = {}, files = [], ex
         throw err;
     }
 
+    // scope→binding 路由：绑定形如 <skill.binding_key>.<scope> 必须已登记（如 risk_detection.rnd）
+    if (binding_scope) {
+        const scopedKey = `${skill.binding_key}.${binding_scope}`;
+        if (!getBinding(scopedKey)) {
+            const err = new Error(`未知绑定：${scopedKey}`);
+            err.code = 'VALIDATION_FAILED';
+            err.http_status = 422;
+            throw err;
+        }
+    }
+
     const task = await store.insertTask({
         title: (title && String(title).trim()) || skill.name,
         skill_key: skill.skill_key,
         scene: skill.scene,
         status: execute_now ? 'queued' : 'draft',
-        input: { inputs, files: (files || []).map(({ buffer, ...meta }) => meta) }, // 文件内容不落库
+        input: { inputs, files: (files || []).map(({ buffer, ...meta }) => meta), binding_scope: binding_scope || null }, // 文件内容不落库
         user,
         assigned_to,
         trace_id: newTraceId(),
@@ -133,7 +144,7 @@ export async function createTask({ skill_key, title, inputs = {}, files = [], ex
     }
 
     if (execute_now) {
-        return executeTask(task, user, { inputs, files });
+        return executeTask(task, user, { inputs, files, binding_scope: binding_scope || null });
     }
     return task;
 }
@@ -157,6 +168,7 @@ export async function executeTask(task, user, patch = {}) {
     const skill = getSkill(task.skill_key);
     const inputs = patch.inputs ?? task.input?.inputs ?? {};
     const files = patch.files ?? task.input?.files ?? [];
+    const bindingScope = patch.binding_scope ?? task.input?.binding_scope ?? null;
     const traceId = task.trace_id || newTraceId();
 
     // draft → queued（直接提交时 createTask 已置 queued，这里跳过）
@@ -164,15 +176,16 @@ export async function executeTask(task, user, patch = {}) {
     if (current.status === 'draft') {
         current = await transition(current, 'queued', { actor: user });
     }
-    return _driveRun(current, skill, { inputs, files, traceId, actor: user, awaitResult: skill.execution_mode === 'blocking' });
+    return _driveRun(current, skill, { inputs, files, bindingScope, traceId, actor: user, awaitResult: skill.execution_mode === 'blocking' });
 }
 
 /**
  * 执行核心：queued → running → Provider → 终态。
  * 单独抽出以便 executeTask / retryTask 复用（PRD §7 重试语义）。
  */
-async function _driveRun(task, skill, { inputs, files, traceId, actor, awaitResult }) {
-    const bindingResolved = _resolveProviderMeta(skill);
+async function _driveRun(task, skill, { inputs, files, bindingScope = null, traceId, actor, awaitResult }) {
+    const bindingKey = bindingScope ? `${skill.binding_key}.${bindingScope}` : skill.binding_key;
+    const bindingResolved = _resolveProviderMeta(bindingKey);
     // 排队 → 运行
     let current = await transition(task, 'running', { actor });
     const run = await store.insertRun(current.id, {
@@ -193,6 +206,7 @@ async function _driveRun(task, skill, { inputs, files, traceId, actor, awaitResu
                     files: hydratedFiles,
                     context: { trace_id: traceId },
                 },
+                bindingScope ? { binding_key: bindingKey } : {},
             );
             await store.finishRun(run.id, {
                 status: output.status || 'succeeded',
@@ -269,15 +283,15 @@ async function _driveRun(task, skill, { inputs, files, traceId, actor, awaitResu
 }
 
 /** 解析绑定元信息（仅用于 TaskRun 登记；解析失败不阻断 —— 留给 runSkill 明确报错） */
-function _resolveProviderMeta(skill) {
+function _resolveProviderMeta(bindingKey) {
     try {
-        const resolved = resolveBinding(skill.binding_key);
+        const resolved = resolveBinding(bindingKey);
         return {
             provider: resolved.ok ? resolved.config.provider : 'unknown',
-            binding_key: skill.binding_key,
+            binding_key: bindingKey,
         };
     } catch {
-        return { provider: 'unknown', binding_key: skill.binding_key };
+        return { provider: 'unknown', binding_key: bindingKey };
     }
 }
 
@@ -393,6 +407,7 @@ export async function retryTask(task, user, { inputs } = {}) {
     return _driveRun(queued, skill, {
         inputs: modified ? inputs : latest,
         files: task.input?.files ?? [],
+        bindingScope: task.input?.binding_scope ?? null,
         traceId: task.trace_id || newTraceId(),
         actor: user,
         awaitResult: skill.execution_mode === 'blocking',

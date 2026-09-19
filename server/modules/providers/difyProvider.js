@@ -94,8 +94,13 @@ export async function execute(config, skill, standardInput = {}) {
             });
         }
 
+        // 工作流文件输入变量映射：Dify workflows/run 的文件必须按输入变量名放进 inputs
+        // （绑定可声明 file_input_var，如 quote_verify.file → quote_file）；顶层 files 仅 chat-messages 约定
+        const fileVar = config.file_input_var;
+        const wfInputs = fileVar && uploaded.length ? { ...inputs, [fileVar]: uploaded } : inputs;
+
         const raw = await runWorkflow(config, {
-            inputs,
+            inputs: wfInputs,
             user,
             files: uploaded,
             trace_id: traceId,

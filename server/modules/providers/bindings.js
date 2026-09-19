@@ -322,6 +322,7 @@ export const BINDINGS = Object.freeze([
         display_name: '核查报价 · 文件解析',
         base_url_env: 'DIFY_QUOTE_VERIFY_FILE_API_URL',
         api_key_env: 'DIFY_QUOTE_VERIFY_FILE_API_KEY',
+        file_input_var: 'quote_file', // Dify 工作流B文件输入变量名（workflows/run 需按变量名放进 inputs）
         endpoint_kind: 'workflow',
         version: '1.0',
         timeout_ms: 180000,
