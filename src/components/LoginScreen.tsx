@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Monitor, Eye, EyeOff, Loader2, User, Lock } from 'lucide-react';
 import { APP_TITLE } from '../config';
+import { consumeLoginRedirect } from '../api/client';
 
 interface LoginScreenProps {
   onLogin: (user: string) => void;
@@ -14,9 +15,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
   const [time, setTime] = useState(new Date());
   const [mounted, setMounted] = useState(false);
   const [rememberPwd, setRememberPwd] = useState(false);
+  // 从 /next 被踢回来时会带 ?redirect=，登录后自动回跳；此处仅用于文案提示
+  const [willReturnToNext, setWillReturnToNext] = useState(false);
 
   useEffect(() => {
     setMounted(true);
+    setWillReturnToNext(consumeLoginRedirect() !== null);
     const t = setInterval(() => setTime(new Date()), 1000);
 
     // 初始化时检查并载入已保存的密码与账号
@@ -79,6 +83,11 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
         onLogin(data.data.username);
         // 通知 RoleContext 刷新角色权限（token 已写入 localStorage）
         window.dispatchEvent(new CustomEvent('user-logged-in'));
+        // 从 /next 被踢来登录的，登录后整页回跳新版工作台（否则会落在旧桌面系统）
+        const back = consumeLoginRedirect();
+        if (back) {
+          window.location.href = back;
+        }
       } else {
         const msg = data.code === 'SESSION_LIMIT_REACHED' 
           ? '登录失败：账号已达 5 台设备登录上限。请在客户端手动退出后再试。'
@@ -154,7 +163,9 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
             <Monitor className="text-white w-8 h-8" />
           </div>
           <h1 className="text-lg font-semibold text-white/90 leading-snug">{APP_TITLE}</h1>
-          <p className="text-white/40 text-xs mt-1.5">输入账号与密码以继续</p>
+          <p className="text-white/40 text-xs mt-1.5">
+            {willReturnToNext ? '登录后将自动返回新版工作台' : '输入账号与密码以继续'}
+          </p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">

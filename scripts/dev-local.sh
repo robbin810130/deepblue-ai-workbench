@@ -66,8 +66,8 @@ echo "🔧 深蓝工作台 · 本地开发环境"
 echo "   后端  http://127.0.0.1:${BACKEND_PORT}   （库 ${DB_NAME} @ ${PG_HOST_PORT}）"
 echo "   前端  http://localhost:${FRONTEND_PORT}/next/"
 echo
-echo "   首次打开请先访问 http://localhost:${FRONTEND_PORT}/ 登录，"
-echo "   再进入 /next/（新界面复用旧登录态，跨端口不会共享）。"
+echo "   直接打开 http://localhost:${FRONTEND_PORT}/next/ 即可："
+echo "   未登录会被引导到登录页，登录后自动跳回新版工作台。"
 echo "   Ctrl+C 停止全部。"
 echo
 

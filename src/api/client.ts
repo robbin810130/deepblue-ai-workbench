@@ -4,10 +4,71 @@
  * 约定：
  *   - JWT 取旧系统同一存储键 blue_os_token（登录入口不重复做，复用旧登录页）
  *   - 响应统一解包 { success, data }；失败抛 ApiError（code/message 来自后端错误模型）
- *   - 401 → 清 token 回旧登录页
+ *   - 401 → 清 token 回旧登录页；若当前处于 /next 下则附带 ?redirect= 以便登录后回跳
  */
 
 const TOKEN_KEY = 'blue_os_token';
+
+/** 登录回跳参数名（LoginScreen 侧同源读取，改名需同步两处） */
+export const REDIRECT_PARAM = 'redirect';
+
+/** 新版工作台路由前缀；此前缀下的会话失效需要登录后回跳 */
+const NEXT_PREFIX = '/next';
+
+/**
+ * 会话失效统一处理：清 token 并把用户送到登录页。
+ *
+ * 为什么不直接 `location.href = '/'`：
+ *   旧系统本身就是登录页，回 `/` 就够；但 /next 是新入口，它没有自己的登录页，
+ *   一旦被踢回 `/`，用户登录后只会落在旧桌面系统，永远回不到 /next —— 表现为
+ *   「新界面打不开 / 登录完还是旧系统」。故 /next 下需带上回跳地址。
+ *
+ * 防死循环：回跳地址只允许站内相对路径且必须以 /next 开头，登录后再次 401
+ * 也会重新带上 redirect，不会指向 `/?redirect=...` 自身。
+ */
+function redirectToLogin(): void {
+  const { pathname, search } = window.location;
+  if (pathname === NEXT_PREFIX || pathname.startsWith(`${NEXT_PREFIX}/`)) {
+    const back = encodeURIComponent(`${pathname}${search}`);
+    window.location.href = `/?${REDIRECT_PARAM}=${back}`;
+    return;
+  }
+  window.location.href = '/';
+}
+
+/**
+ * 供旧版 fetchWithAuth（src/utils/authFetch.ts）复用的会话失效处理。
+ *
+ * 旧实现只 removeItem + dispatch('auth-unauthorized')，靠旧 App.tsx 监听事件切回登录页；
+ * 但 /next 下没有这个监听者，token 被静默删除、页面既不跳转也不报错。
+ * 故：/next 下直接跳登录页（带回跳），其余路径交回旧行为。
+ */
+export function handleUnauthorized(): void {
+  const { pathname } = window.location;
+  if (pathname === NEXT_PREFIX || pathname.startsWith(`${NEXT_PREFIX}/`)) {
+    redirectToLogin();
+  }
+}
+
+/**
+ * 读取并消费登录回跳地址（登录成功后调用，返回值非空即应整页跳转）。
+ *
+ * 安全：经 URL 规范化后再校验同源 + /next 前缀，可挡掉 `//evil.com`、
+ * `https://evil.com`、`/next/../evil` 之类的开放重定向构造。
+ */
+export function consumeLoginRedirect(): string | null {
+  const raw = new URLSearchParams(window.location.search).get(REDIRECT_PARAM);
+  if (!raw) return null;
+  let url: URL;
+  try {
+    url = new URL(raw, window.location.origin);
+  } catch {
+    return null;
+  }
+  if (url.origin !== window.location.origin) return null;
+  if (url.pathname !== NEXT_PREFIX && !url.pathname.startsWith(`${NEXT_PREFIX}/`)) return null;
+  return `${url.pathname}${url.search}${url.hash}`;
+}
 
 export class ApiError extends Error {
   code: string;
@@ -35,7 +96,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (res.status === 401) {
     localStorage.removeItem(TOKEN_KEY);
-    window.location.href = '/'; // 回旧登录页
+    redirectToLogin();
     throw new ApiError('AUTH_REQUIRED', '登录已失效，请重新登录', 401);
   }
 
@@ -77,7 +138,7 @@ async function requestCompat<T>(
 
   if (res.status === 401) {
     localStorage.removeItem(TOKEN_KEY);
-    window.location.href = '/'; // 回旧登录页
+    redirectToLogin();
     throw new ApiError('AUTH_REQUIRED', '登录已失效，请重新登录', 401);
   }
 
