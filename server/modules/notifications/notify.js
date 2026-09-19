@@ -93,7 +93,9 @@ export async function listNotifications(userId, { unread_only = false, todos_onl
         return `$${params.length}`;
     };
     if (unread_only) where.push(`read_at IS NULL`);
-    if (todos_only) where.push(`is_todo = TRUE`);
+    // 待办面板要的是「还没处理完的待办」：只标 is_todo 会把已完成的也捞出来，
+    // 用户勾选完成后条目又会原地复活（前端因此不得不自己过滤）。
+    if (todos_only) where.push(`is_todo = TRUE AND todo_done = FALSE`);
     params.push(Math.min(Number(limit) || 20, 100));
     const lim = `$${params.length}`;
     params.push(Math.max(Number(offset) || 0, 0));

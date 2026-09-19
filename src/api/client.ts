@@ -260,10 +260,11 @@ export const api = {
   getMetrics: () => request<TaskMetrics>('/api/v1/tasks/metrics'),
 
   // 通知
-  listNotifications: (params: { unread_only?: boolean; todos_only?: boolean } = {}) => {
+  listNotifications: (params: { unread_only?: boolean; todos_only?: boolean; limit?: number } = {}) => {
     const qs = new URLSearchParams();
     if (params.unread_only) qs.set('unread_only', 'true');
     if (params.todos_only) qs.set('todos_only', 'true');
+    if (params.limit) qs.set('limit', String(params.limit));
     return request<ApiNotification[]>(`/api/v1/notifications?${qs.toString()}`);
   },
   unreadCount: () => request<{ unread: number }>('/api/v1/notifications/unread-count'),

@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Bell, Check, ChevronRight } from 'lucide-react';
 import { cn } from '../../components/ui/cn';
 import { api, ApiError, type ApiNotification } from '../../api/client';
+import { fmtRelative } from '../../utils/time';
 
 const TYPE_LABEL: Record<string, string> = {
   task_succeeded: '任务完成',
@@ -19,16 +20,6 @@ const TYPE_LABEL: Record<string, string> = {
   task_assigned: '任务分配',
   task_created: '任务创建',
 };
-
-function timeAgo(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const m = Math.floor(diff / 60_000);
-  if (m < 1) return '刚刚';
-  if (m < 60) return `${m} 分钟前`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h} 小时前`;
-  return `${Math.floor(h / 24)} 天前`;
-}
 
 export function NotificationsBell() {
   const [unread, setUnread] = useState(0);
@@ -176,7 +167,7 @@ export function NotificationsBell() {
                         >
                           {TYPE_LABEL[n.type] || n.type}
                         </span>
-                        <span className="text-[11px] text-ink-faint">{timeAgo(n.created_at)}</span>
+                        <span className="text-[11px] text-ink-faint">{fmtRelative(n.created_at)}</span>
                       </div>
                       <p className="mt-1 truncate text-lead text-ink">{n.title}</p>
                       {n.body && <p className="mt-0.5 line-clamp-2 text-caption text-ink-soft">{n.body}</p>}
