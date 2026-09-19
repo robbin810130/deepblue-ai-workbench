@@ -158,6 +158,12 @@ export function extractAnswerText(rawOutputs) {
     return typeof first === 'object' ? JSON.stringify(first, null, 2) : String(first);
 }
 
+/** 从归一化输出中提取回答正文（chat answer 优先，_extra 兜底） */
+export function extractAnswer(outputs) {
+    if (!outputs || typeof outputs !== 'object') return '';
+    return outputs._extra?.answer ?? outputs.answer ?? extractAnswerText(outputs);
+}
+
 /** 过滤思考标签并规范换行（旧路由的既有行为，原样保留） */
 export function stripThinkTags(text) {
     if (typeof text !== 'string') return text;

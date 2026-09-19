@@ -375,6 +375,18 @@ async function main() {
                 no: 39, key: 'material_quote', path: '/api/material-quote/run', auth: true,
                 body: { query: '开始' }, ghostGuard: true, // 幽灵技能（live:false）：桥必须拒绝且不建任务
             },
+            {
+                no: 40, key: 'market_insight', path: '/api/market-insight/run', auth: true,
+                body: { query: '冒烟市场洞察' },
+            },
+            {
+                no: 41, key: 'qualification', path: '/api/qualification/run', auth: true,
+                body: { file_ids: null, inputs: { kind: 'qualification' } }, // file_ids 动态填
+            },
+            {
+                no: 42, key: 'marketing_analysis', path: '/api/marketing-analysis/chat', auth: true,
+                body: { query: '冒烟营销分析' },
+            },
         ];
         // 造一个暂存文件供 hazard/contract 用
         const staged = await fetch(`${BASE}/api/v1/files/upload`, {

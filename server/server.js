@@ -1054,6 +1054,27 @@ app.post('/api/marketing-analysis/chat', authenticateToken, async (req, res) => 
     // 审核日志
     logAudit(req, { module: 'MARKETING_ANALYSIS', action: 'CHAT_ASSISTANT', detail: query.substring(0, 100) });
 
+    // ── D4 试点迁移（TASK_CENTER_PILOT 含 marketing_analysis 时启用）──────────
+    // 建任务 → 执行 → 通知闭环；响应改为完整 JSON（前端按 content-type 双模式兼容）。
+    if (legacyBridge.isPilotSkill('marketing_analysis')) {
+        try {
+            const r = await legacyBridge.runThroughTaskCenter({
+                skillKey: 'marketing_analysis',
+                title: `营销分析：${String(query || '').slice(0, 24)}`,
+                user: req.user,
+                inputs: { message: query, ...(inputs || {}) },
+            });
+            if (!r.ok) {
+                console.error(`[营销分析-任务中心] ${r.taskNo} 失败 ${r.errorCode}: ${r.message}`);
+                return res.status(500).json({ success: false, message: `任务执行失败（${r.taskNo}）：${r.message}` });
+            }
+            return res.json({ success: true, data: legacyBridge.stripThinkTags(legacyBridge.extractAnswer(r.outputs)) });
+        } catch (err) {
+            console.error('[营销分析-任务中心] 异常:', err.message);
+            return res.status(500).json({ success: false, message: `AI 诊断异常: ${err.message}` });
+        }
+    }
+
     // Dify API Key placeholder check - fallback to simulation
     if (!apiKey || apiKey === 'app-xxxx') {
         res.setHeader('Content-Type', 'text/event-stream');
@@ -5411,6 +5432,28 @@ app.post('/api/market-insight/run', async (req, res) => {
         const apiUrl = process.env.DIFY_MARKET_INSIGHT_API_URL || 'http://39.108.221.22/v1/chat-messages';
         logAudit(req, { module: 'MARKET_INSIGHT', action: 'RUN_CHATFLOW', details: { query: req.body.query } });
 
+        // ── D4 试点迁移（TASK_CENTER_PILOT 含 market_insight 时启用）──────────
+        // 建任务 → 执行 → 通知闭环；响应改为完整 JSON（弃 SSE）。
+        // ⚠️ 本仓库暂无该模块新前端消费此路由，启用前需消费方支持 JSON。
+        if (legacyBridge.isPilotSkill('market_insight')) {
+            try {
+                const r = await legacyBridge.runThroughTaskCenter({
+                    skillKey: 'market_insight',
+                    title: `市场洞察：${String(req.body?.query || '默认分析').slice(0, 24)}`,
+                    user: req.user?.id ? req.user : { id: 0, username: 'market_anonymous', role: 'user' },
+                    inputs: { message: req.body?.query || '进行市场洞察分析' },
+                });
+                if (!r.ok) {
+                    console.error(`[市场洞察-任务中心] ${r.taskNo} 失败 ${r.errorCode}: ${r.message}`);
+                    return res.status(500).json({ success: false, message: `任务执行失败（${r.taskNo}）：${r.message}` });
+                }
+                return res.json({ success: true, data: legacyBridge.stripThinkTags(legacyBridge.extractAnswer(r.outputs)) });
+            } catch (err) {
+                console.error('[市场洞察-任务中心] 异常:', err.message);
+                return res.status(500).json({ success: false, message: `AI 诊断异常: ${err.message}` });
+            }
+        }
+
         if (!apiKey) {
             console.warn('[市场分析引擎] API_KEY 未配置，请在.env中填写');
             return res.status(503).json({ error: '后端 API_KEY 未配置，请联系管理员。' });
@@ -7462,6 +7505,31 @@ app.post('/api/qualification/run', async (req, res) => {
         const { upload_file_ids, inputs } = req.body;
         console.log('[qualification] Received body:', JSON.stringify(req.body, null, 2));
         logAudit(req, { module: 'QUALIFICATION', action: 'RUN_EXTRACT', details: { upload_file_ids, inputs } });
+
+        // ── D4 试点迁移（TASK_CENTER_PILOT 含 qualification 时启用）──────────
+        // 走 body.file_ids（平台暂存）；旧 upload_file_ids（Dify id）继续走旧直连路径。
+        if (legacyBridge.isPilotSkill('qualification') && Array.isArray(req.body?.file_ids)) {
+            try {
+                const kind = (inputs && inputs.kind) || 'qualification';
+                const r = await legacyBridge.runThroughTaskCenter({
+                    skillKey: 'qualification',
+                    title: `资质提取：${kind}（${req.body.file_ids.length} 个文件）`,
+                    user: req.user?.id ? req.user : { id: 0, username: 'qualification_anonymous', role: 'user' },
+                    inputs: { message: `[类型:${kind}] 开始提取资质信息`, kind },
+                    files: req.body.file_ids.map(String),
+                });
+                if (!r.ok) {
+                    console.error(`[资质提取-任务中心] ${r.taskNo} 失败 ${r.errorCode}: ${r.message}`);
+                    return res.status(500).json({ success: false, message: `任务执行失败（${r.taskNo}）：${r.message}` });
+                }
+                const answerText = String(legacyBridge.extractAnswer(r.outputs) ?? '');
+                // 响应形状对齐旧直连（前端按 .answer 取值）
+                return res.json({ answer: answerText });
+            } catch (err) {
+                console.error('[资质提取-任务中心] 异常:', err.message);
+                return res.status(500).json({ success: false, message: `AI 诊断异常: ${err.message}` });
+            }
+        }
 
         if (!apiKey || apiKey.includes('PLACEHOLDER')) {
             return res.status(503).json({ error: '服务端 API Key 未配置，请在 .env 中填入智能引擎密钥。' });

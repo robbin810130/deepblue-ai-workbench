@@ -578,6 +578,18 @@ export default function MarketingAnalysisModule() {
                 throw new Error(`请求分析助手失败: ${response.status} ${errText}`);
             }
 
+            // D4 试点迁移：任务中心模式返回完整 JSON（弃流式）；旧直连模式仍为 SSE
+            const contentType = response.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
+                const j = await response.json();
+                if (j.success === false) throw new Error(j.message || '任务执行失败');
+                const fullText = String(j.data ?? '');
+                setMessages(prev => prev.map(msg =>
+                    msg.id === assistantMsgId ? { ...msg, content: fullText } : msg
+                ));
+                return;
+            }
+
             const reader = response.body?.getReader();
             if (!reader) throw new Error('流式读取通道未准备就绪');
 
