@@ -286,6 +286,124 @@ export async function runChat(config, { query, inputs = {}, user, conversation_i
 }
 
 /**
+ * 流式跑对话（chat-messages，SSE）—— 对话式技能改造 P0
+ *
+ * Dify chatflow 流式事件序列：message（增量 answer）/ agent_message /
+ * message_end（含 conversation_id 与 metadata）/ error / ping。
+ * 本方法只做透传与解析，事件解释归调用方（chatRoutes）。
+ *
+ * @param {object} config
+ * @param {{query: string, inputs?: object, user: string, conversation_id?: string, files?: object[], trace_id?: string, skill_key?: string, onEvent: (evt: object) => void, signal?: AbortSignal}} params
+ */
+export async function streamChat(config, { query, inputs = {}, user, conversation_id, files = [], trace_id, skill_key, onEvent, signal }) {
+    const base = normalizeBaseUrl(config.base_url);
+    const payload = { inputs, query, response_mode: 'streaming', user: user || 'system' };
+    if (conversation_id) payload.conversation_id = conversation_id;
+    if (files.length > 0) {
+        payload.files = files.map((f) => ({
+            type: f.type || 'document',
+            transfer_method: f.transfer_method || 'local_file',
+            upload_file_id: f.upload_file_id || f.id,
+        }));
+    }
+
+    const res = await fetch(`${base}/chat-messages`, {
+        method: 'POST',
+        headers: { ...authHeaders(config), 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal,
+    });
+
+    if (!res.ok || !res.body) {
+        const text = await res.text().catch(() => '');
+        throw new ProviderError(`Dify 流式对话接口返回 ${res.status}：${text.slice(0, 300)}`, { status: res.status, binding_key: config.binding_key });
+    }
+
+    logger.info('provider_chat_stream_start', { trace_id, binding_key: config.binding_key, skill_key });
+
+    // ── 超时保护（对话式改造 P0-2）────────────────────────────────
+    // Dify streaming 模式下「缺必填入参」不回 error、也不关连接，只反复发 ping，
+    // 调用方会一直等到读超时（实测 90~240s，用户界面表现为「一直思考中」）。这里设两道闸：
+    //   ① 首事件超时：迟迟收不到「非 ping」事件 → 判失败，给出可读原因；
+    //   ② 整体超时：整个流的最长存活时间（兜底，防长静默）。
+    const firstEventMs = Number(config.chat_first_event_timeout_ms || process.env.CHAT_FIRST_EVENT_TIMEOUT_MS || 30000);
+    const totalMs = Number(config.chat_total_timeout_ms || process.env.CHAT_TOTAL_TIMEOUT_MS || 240000);
+    const startedAt = Date.now();
+    let sawMeaningful = false; // 是否收到过「非 ping」事件（ping 只是心跳）
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+
+    /** 读下一块；超时则取消底层读取并抛 ProviderError（带可读原因） */
+    const readChunk = () => {
+        const totalLeft = totalMs - (Date.now() - startedAt);
+        if (totalLeft <= 0) {
+            reader.cancel().catch(() => {});
+            return Promise.reject(
+                new ProviderError(`Dify 对话超时（超过 ${Math.round(totalMs / 1000)}s）`, {
+                    status: 504,
+                    code: 'ETIMEDOUT',
+                    binding_key: config.binding_key,
+                }),
+            );
+        }
+        const waitMs = sawMeaningful ? totalLeft : Math.min(totalLeft, firstEventMs);
+        let timer;
+        let timedOut = null;
+        const timeout = new Promise((_, reject) => {
+            timer = setTimeout(() => {
+                timedOut = new ProviderError(
+                    sawMeaningful
+                        ? `Dify 对话超时（超过 ${Math.round(totalMs / 1000)}s 未结束）`
+                        : `Dify 在 ${Math.round(firstEventMs / 1000)}s 内没有响应 —— 可能是应用缺少必填入参或服务异常`,
+                    { status: 504, code: 'ETIMEDOUT', binding_key: config.binding_key },
+                );
+                reject(timedOut);
+                // 关闭底层连接（否则挂起的 read 会让事件循环一直不退出）
+                reader.cancel().catch(() => {});
+            }, waitMs);
+        });
+        // 注意：不能在计时器里直接 reader.cancel() —— 那会让挂起的 read() 立刻以 {done:true}
+        // 抢先胜出 race，导致「超时」被误判为「正常结束」。这里用 timedOut 标志做确定性判定。
+        return Promise.race([reader.read(), timeout])
+            .then((chunk) => {
+                if (timedOut) {
+                    reader.cancel().catch(() => {});
+                    throw timedOut;
+                }
+                return chunk;
+            })
+            .finally(() => clearTimeout(timer));
+    };
+
+    while (true) {
+        const { done, value } = await readChunk();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let sep;
+        while ((sep = buffer.indexOf('\n\n')) !== -1) {
+            const chunk = buffer.slice(0, sep);
+            buffer = buffer.slice(sep + 2);
+            const line = chunk.split('\n').find((l) => l.startsWith('data:'));
+            if (!line) continue;
+            const raw = line.slice(5).trim();
+            if (!raw || raw === '[DONE]') continue;
+            try {
+                const evt = JSON.parse(raw);
+                if (evt.event && evt.event !== 'ping') sawMeaningful = true;
+                onEvent(evt);
+            } catch {
+                sawMeaningful = true;
+                onEvent({ event: 'raw', data: raw });
+            }
+        }
+    }
+    logger.info('provider_chat_stream_end', { trace_id, binding_key: config.binding_key, skill_key });
+}
+
+/**
  * 流式跑工作流（SSE）—— 文档 03 §7 用于需要步骤/文本流的场景
  * @param {object} config
  * @param {{inputs?: object, user: string, files?: object[], trace_id?: string, skill_key?: string, onEvent: (evt: object) => void, signal?: AbortSignal}} params
@@ -371,6 +489,57 @@ export async function stopWorkflow(config, taskId, user, { trace_id } = {}) {
             headers: { ...authHeaders(config), 'Content-Type': 'application/json' },
             body: JSON.stringify({ user: user || 'system' }),
         },
+        { timeoutMs: 30000, trace_id, binding_key: config.binding_key, retries: 0 },
+    );
+}
+
+/**
+ * 提交人工介入（human-in-the-loop）表单 —— chatflow 暂停后由用户点按钮触发。
+ *
+ * Dify 侧：POST /v1/form/human_input/<form_token>
+ *   body: { action, inputs, user }   （user 必填，validate_app_token 依赖它解析 end_user）
+ * 返回 200 `{}`，工作流在 worker 里**异步续跑**，因此调用方需另行取回后续结果
+ * （见 fetchConversationMessages）。
+ *
+ * @param {object} config       resolveBinding 产出的运行时配置
+ * @param {{form_token:string, action:string, inputs?:object, user:string, trace_id?:string}} params
+ */
+export async function submitHumanInput(config, { form_token, action, inputs = {}, user, trace_id }) {
+    const base = normalizeBaseUrl(config.base_url);
+    return request(
+        `${base}/form/human_input/${encodeURIComponent(form_token)}`,
+        {
+            method: 'POST',
+            headers: { ...authHeaders(config), 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action, inputs, user: user || 'system' }),
+        },
+        { timeoutMs: 30000, trace_id, binding_key: config.binding_key, retries: 0 },
+    );
+}
+
+/**
+ * 拉取会话消息（用于取回人工介入续跑后的结果）。
+ *
+ * Dify 侧：GET /v1/messages?user=&conversation_id=&limit=
+ * 关键字段：
+ *   - `extra_contents[]`：`{type:'human_input', submitted:false, form_definition:{form_token,form_content,actions}}`
+ *     即「下一个待提交的人工介入表单」；
+ *   - `status`：`paused` / `running` 表示仍在推进，其他值为终态（`normal` / `error`）；
+ *   - `answer`：终态下的最终回复。
+ *
+ * @param {object} config
+ * @param {{conversation_id:string, user:string, limit?:number, trace_id?:string}} params
+ */
+export async function fetchConversationMessages(config, { conversation_id, user, limit = 10, trace_id }) {
+    const base = normalizeBaseUrl(config.base_url);
+    const qs = new URLSearchParams({
+        user: user || 'system',
+        conversation_id: String(conversation_id || ''),
+        limit: String(limit),
+    });
+    return request(
+        `${base}/messages?${qs.toString()}`,
+        { method: 'GET', headers: authHeaders(config) },
         { timeoutMs: 30000, trace_id, binding_key: config.binding_key, retries: 0 },
     );
 }

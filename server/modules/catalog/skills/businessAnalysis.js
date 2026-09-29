@@ -92,10 +92,16 @@ export const businessAnalysisSkills = [
         permission: { code: 'skill:dashboard_center:view', data_scope: 'dept' },
         task: { trackable: false, idempotent: true },
         live: true,
+        // 2026-09-21：本技能是「聚合视图」而非「执行型技能」——它既不调 Dify，
+        // 也不产出任务。此前没有声明，新界面只能拿 input_schema 渲染成一个空表单，
+        // 点「开始执行」必然建出一个没有执行体的任务（=用户看到的「用不了」）。
+        // 声明 view_panel 后，catalog 下发 interaction_mode='view'，技能页渲染
+        // 专属面板（看板列表/预览），不再走表单与任务中心。
+        view_panel: 'business_dashboard_center',
         legacy: {
             app_id: 'dashboard_center',
-            routes: ['/api/dashboards/*'],
-            note: '纯聚合技能，不直接调用 Dify（binding_key=internal 表示平台内部实现）',
+            routes: ['/api/dashboards/*', '/api/business-dashboard'],
+            note: '纯聚合技能，不直接调用 Dify（binding_key=internal 表示平台内部实现）；数据源为 sys_dashboards（外部登记）+ business_dashboard（AI 发布）',
         },
     },
 ];

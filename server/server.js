@@ -41,6 +41,7 @@ import taskRoutesV1 from './routes/v1/taskRoutes.js'; // /api/v1 任务中心接
 import fileRoutesV1 from './routes/v1/fileRoutes.js'; // /api/v1 文件暂存与签名下载（M4，PRD §7/§9）
 import notificationRoutesV1 from './routes/v1/notificationRoutes.js'; // /api/v1 通知与待办（M4，PRD §8）
 import permissionRoutesV1 from './routes/v1/permissionRoutes.js'; // /api/v1 技能级授权管理（M6 完整版，文档 06）
+import chatRoutesV1 from './routes/v1/chatRoutes.js'; // /api/v1 通用对话式技能接口（对话式交互改造 P0）
 import { v1ErrorHandler } from './modules/common/apiResponse.js'; // v1 标准响应/错误模型（文档 03 §2–§3）
 import { analyzeMaterialQuote } from './services/pricingAnalysisService.js';
 import { difyKnowledgeService } from './services/difyKnowledgeService.js';
@@ -244,6 +245,7 @@ app.use('/api/v1', taskRoutesV1); // 任务中心（M3，PRD 05）
 app.use('/api/v1', fileRoutesV1); // 文件暂存与签名下载（M4，PRD §7/§9）
 app.use('/api/v1', notificationRoutesV1); // 通知与待办（M4，PRD §8）
 app.use('/api/v1', permissionRoutesV1); // 技能级授权管理（M6 完整版，文档 06）
+app.use('/api/v1/chat', chatRoutesV1); // 通用对话式技能接口（对话式交互改造 P0）
 app.use('/api/v1', v1ErrorHandler()); // v1 专用错误翻译（文档 03 §3）
 
 // ============================================================
@@ -983,6 +985,63 @@ async function runInitDDL() {
         } catch (eqErr) {
             logger.error('[DDL] 企业资质库模块表初始化失败：' + eqErr.message);
         }
+
+        // --- 通用对话会话表（对话式技能改造 P0：所有 endpoint_kind=chat 技能共用）---
+        // 与 sys_product_selection_conversations 的区别：那是单技能专用表；
+        // 本表按 skill_key 维度通用，绑定 Dify conversation_id 以维持多轮上下文
+        await safeDDL('ddl#55', () => pool.query(`
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                id                    SERIAL PRIMARY KEY,
+                user_id               INTEGER NOT NULL,
+                skill_key             VARCHAR(100) NOT NULL,
+                title                 VARCHAR(200) NOT NULL DEFAULT '新会话',
+                dify_conversation_id  VARCHAR(100),
+                mode                  VARCHAR(20) NOT NULL DEFAULT 'chat',
+                slot_state            JSONB,
+                task_id               UUID,
+                status                VARCHAR(20) NOT NULL DEFAULT 'collecting',
+                created_at            TIMESTAMPTZ DEFAULT NOW(),
+                updated_at            TIMESTAMPTZ DEFAULT NOW()
+            )
+        `));
+        await safeDDL('ddl#56', () => pool.query(`CREATE INDEX IF NOT EXISTS idx_chat_sessions_user ON chat_sessions(user_id, skill_key)`));
+        await safeDDL('ddl#57', () => pool.query(`
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id          SERIAL PRIMARY KEY,
+                session_id  INTEGER NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                role        VARCHAR(20) NOT NULL,
+                content     TEXT,
+                files       JSONB,
+                meta        JSONB,
+                trace_id    VARCHAR(64),
+                created_at  TIMESTAMPTZ DEFAULT NOW()
+            )
+        `));
+        await safeDDL('ddl#58', () => pool.query(`CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id)`));
+        // ── ddl#59~63：对话式改造 P1（workflow 类技能的槽位收集模式）─────────
+        //   mode   : chat = 直连 Dify 对话；slot = 本地收集参数后执行 workflow
+        //   slot_state: { inputs, last_ask, extractor } 槽位收集进度（含追问顺序）
+        //   task_id: 收集齐并执行后关联的任务编号（可跳任务中心/看板）
+        //   status : collecting → ready → executing → done
+        await safeDDL('ddl#59', () => pool.query(`ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS mode VARCHAR(20) NOT NULL DEFAULT 'chat'`));
+        await safeDDL('ddl#60', () => pool.query(`ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS slot_state JSONB`));
+        await safeDDL('ddl#61', () => pool.query(`ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS task_id INTEGER`));
+        await safeDDL('ddl#62', () => pool.query(`ALTER TABLE chat_sessions ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'collecting'`));
+        await safeDDL('ddl#63', () => pool.query(`ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS meta JSONB`));
+        // ddl#64：task_id 初版误建为 INTEGER，而 tasks.id 是 UUID（见 taskStore.ensureTasksTables）
+        //   → 仅在类型不符时迁移一次（USING NULL 丢弃历史脏值，槽位会话重跑即可恢复）
+        await safeDDL('ddl#64', () => pool.query(`
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_name = 'chat_sessions' AND column_name = 'task_id' AND data_type <> 'uuid'
+                ) THEN
+                    ALTER TABLE chat_sessions ALTER COLUMN task_id TYPE UUID USING NULL;
+                END IF;
+            END $$;
+        `));
+        logger.info('[DDL] 通用对话会话表初始化完成 ✓（含 P1 槽位收集字段）');
 
 
     } catch (err) {

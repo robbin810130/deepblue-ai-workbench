@@ -31,6 +31,7 @@ import {
 import { sendOk, sendFail, asyncHandler, startTimer, resolveTraceId } from '../../modules/common/apiResponse.js';
 import { AppError } from '../../modules/common/errors.js';
 import { evaluateSkillPermission } from '../../modules/permissions/evaluator.js';
+import { getBinding } from '../../modules/providers/bindings.js';
 
 const router = express.Router();
 
@@ -119,10 +120,41 @@ router.get(
         // M6 完整版：技能级显式授权优先 → 旧版映射回落 → 诚实 not_evaluated
         // （判定链见 permissions/evaluator.js；source 标明判定来源）
         const permission = await evaluateSkillPermission(skill, req.user);
+        // 对话式改造 P0：暴露绑定的执行形态，前端据此决定默认进入对话模式还是表单模式
+        const binding = getBinding(skill.binding_key || skill.skill_key);
+        // 2026-09-20 P1-4：显式声明 conversational: false 的技能（批量数据作业 / 多文件 ETL）
+        // 一律不进对话式入口 —— interaction_mode 为 null、interactive_enabled 为 false，
+        // 前端据此回落到表单模式（这些技能的既有入口见各自 legacy.routes）。
+        const conversational = skill.conversational !== false;
+        // 2026-09-21：视图型技能（声明了 view_panel，如 dashboard_center）—— 它没有
+        // 「执行」语义，前端应渲染专属面板而非表单/对话。interaction_mode 是前端唯一判据，
+        // 故在此扩展出 'view'；未声明 view_panel 的技能行为完全不变（零回归）。
+        const viewPanel = skill.view_panel || null;
         return sendOk(
             res,
             {
                 ...toApiShape(skill),
+                endpoint_kind: binding?.endpoint_kind || null,
+                chat_enabled:
+                    !viewPanel && conversational && binding?.provider === 'dify' && binding?.endpoint_kind === 'chat',
+                // 对话式改造 P1：workflow 类技能走「对话收集参数 → 确认 → 执行」，
+                // 前端据此决定默认进入哪种对话模式（interaction_mode 是唯一判据）
+                slot_enabled: !viewPanel && conversational && binding?.endpoint_kind === 'workflow',
+                interaction_mode: viewPanel
+                    ? 'view'
+                    : !conversational
+                      ? null
+                      : binding?.endpoint_kind === 'workflow'
+                        ? 'slot'
+                        : binding?.provider === 'dify' && binding?.endpoint_kind === 'chat'
+                          ? 'chat'
+                          : null,
+                interactive_enabled:
+                    !viewPanel &&
+                    conversational &&
+                    (binding?.endpoint_kind === 'workflow' ||
+                        (binding?.provider === 'dify' && binding?.endpoint_kind === 'chat')),
+                view_panel: viewPanel,
                 permission_status: permission.status,
                 permission_status_reason: permission.reason,
                 permission_source: permission.source || null,

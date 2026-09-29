@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Bell, Check, ChevronRight } from 'lucide-react';
 import { cn } from '../../components/ui/cn';
 import { api, ApiError, type ApiNotification } from '../../api/client';
+import { detectNextPrefix } from '../../app/basePath';
 import { fmtRelative } from '../../utils/time';
 
 const TYPE_LABEL: Record<string, string> = {
@@ -68,7 +69,8 @@ export function NotificationsBell() {
 
   const openTask = (n: ApiNotification) => {
     setOpen(false);
-    if (n.task_id) window.location.assign(`/next/tasks/${n.task_id}`);
+    // 新版任务详情在根路径下；/next 下保持原前缀（detectNextPrefix 动态判定）
+    if (n.task_id) window.location.assign(`${detectNextPrefix()}/tasks/${n.task_id}`);
   };
 
   const markRead = async (n: ApiNotification) => {

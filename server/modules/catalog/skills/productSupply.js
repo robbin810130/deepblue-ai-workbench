@@ -57,14 +57,25 @@ export const productSupplySkills = [
         workflow_version: '1.0',
         execution_mode: 'async',
         requires_confirmation: false,
-        supported_files: ['.pdf', '.docx', '.xlsx', '.jpg', '.png'],
+        // ⚠️ 该应用后半段走 PGSQL 工具 + HTTP 请求做「品牌自动入库」——**有写副作用**，
+        //    改此技能前请确认入库目标库/表（2026-09-20 仅做静态分析，未真跑）。
+        supported_files: ['.xlsx', '.xls', '.csv', '.txt'],
+        // 附件 → 文本槽抽取规则（2026-09-20 P1-4）：应用只吃 goods_name_list 文本，
+        // 用户在对话里上传表格时，由服务端抽出品名列拼成多行文本再注入（modules/chat/fileTextAdapter.js）。
+        file_to_text: { slot: 'goods_name_list', column: 'auto' },
         input_schema: {
             type: 'object',
             properties: {
-                file: { type: 'string', format: 'binary', title: '商品资料' },
-                category: { type: 'string', title: '品类' },
+                // 🔴 key 严格等于 Dify「批量产品名提取品牌自动入库」start 变量名 goods_name_list（2026-09-20 P1-4 对齐）
+                // 消费代码对格式很宽容：先试 json.loads（JSON 数组），失败则退化为按 \n 分割。
+                // → 所以「批量」不需要拼 JSON，一行一个商品名即可。
+                goods_name_list: {
+                    type: 'string',
+                    title: '商品名称列表',
+                    description: '一行一个商品名；也可以直接上传 Excel/CSV，我会自动抽出商品名列。',
+                },
             },
-            required: ['file'],
+            required: ['goods_name_list'],
         },
         output_schema: {
             type: 'object',
@@ -146,15 +157,38 @@ export const productSupplySkills = [
         workflow_version: '1.0',
         execution_mode: 'async',
         requires_confirmation: false,
-        supported_files: ['.xlsx', '.xls', '.csv'],
+        // 2026-09-20 P1-4：Dify「选品工作流」无文件入参，全部为文本/数字/枚举
+        supported_files: [],
         input_schema: {
             type: 'object',
             properties: {
-                file: { type: 'string', format: 'binary', title: '选品数据' },
-                keyword: { type: 'string', title: '检索关键词' },
-                action: { type: 'string', enum: ['import', 'tag', 'search'], title: '动作', default: 'import' },
+                // 🔴 所有 key 严格等于 Dify「选品工作流」start 节点变量名（2026-09-20 P1-4 对齐）
+                // 原声明的 action(enum import|tag|search) 是残留字段，应用不认（实测发它只报「缺 query」）。
+                query: {
+                    type: 'string',
+                    title: '选品需求',
+                    description: '用一段话描述你要选什么品，例如「找适合夏天卖的便携小风扇，客单价 30 以内」。上限 2000 字。',
+                },
+                category_str: { type: 'string', title: '分类（选填）' },
+                brand_str: { type: 'string', title: '品牌（选填）' },
+                price_min: { type: 'number', title: '价格下限（选填）' },
+                price_max: { type: 'number', title: '价格上限（选填）' },
+                profit_min: { type: 'number', title: '毛利下限（选填）' },
+                profit_max: { type: 'number', title: '毛利上限（选填）' },
+                supply_mode: {
+                    type: 'string',
+                    enum: ['全部', '代发', '集采'],
+                    title: '供货方式（选填）',
+                    default: '全部',
+                },
+                rerank_level: {
+                    type: 'string',
+                    enum: ['高', '低'],
+                    title: '相似度（选填）',
+                    default: '高',
+                },
             },
-            required: ['action'],
+            required: ['query'],
         },
         output_schema: {
             type: 'object',

@@ -24,6 +24,8 @@ export const ERROR_CODES = Object.freeze({
     RATE_LIMITED: { http_status: 429, message: '请求过于频繁，请稍后重试' },
     /** 平台扩展（文档未列，但注册表与绑定层实际需要） */
     BINDING_INCOMPLETE: { http_status: 502, message: 'AI 服务未正确配置，请联系管理员' },
+    /** 该技能不提供对话式入口（批量数据作业 / 多文件 ETL）—— 是「用法不对」，不是服务端故障 */
+    CHAT_NOT_SUPPORTED: { http_status: 422, message: '该技能不支持对话模式，请改用表单入口' },
     INTERNAL_ERROR: { http_status: 500, message: '服务内部错误' },
 });
 

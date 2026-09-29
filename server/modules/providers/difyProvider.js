@@ -102,7 +102,10 @@ export async function execute(config, skill, standardInput = {}) {
 
         // 工作流文件输入变量映射：Dify workflows/run 的文件必须按输入变量名放进 inputs
         // （绑定可声明 file_input_var，如 quote_verify.file → quote_file）；顶层 files 仅 chat-messages 约定
-        const fileVar = config.file_input_var;
+        // 🔴 2026-09-20 修正：workflow 类技能的文件槽位此前**没有任何通道**送进 Dify
+        //   （绑定里普遍未声明 file_input_var），文件被静默丢弃。现在缺配置时按技能
+        //   input_schema 里第一个文件槽位的 key 推断变量名，与 Dify 侧变量名对齐。
+        const fileVar = config.file_input_var || inferWorkflowFileVar(skill);
         const wfInputs = fileVar && uploaded.length ? { ...inputs, [fileVar]: uploaded } : inputs;
 
         const raw = await runWorkflow(config, {
@@ -135,6 +138,20 @@ export async function execute(config, skill, standardInput = {}) {
 function stripChatInputs(inputs) {
     const { message, query, prompt, text, conversation_id, ...rest } = inputs || {};
     return rest;
+}
+
+/**
+ * 推断 workflow 的文件输入变量名（绑定未声明 file_input_var 时的兜底）。
+ * 取 input_schema 中第一个文件槽位的 key —— 与 Dify 工作流的文件变量名约定一致。
+ * @param {object} skill
+ * @returns {string|null}
+ */
+export function inferWorkflowFileVar(skill) {
+    const props = skill?.input_schema?.properties || {};
+    for (const [key, def] of Object.entries(props)) {
+        if (def?.format === 'binary' || def?.type === 'file' || /^files?$/i.test(key)) return key;
+    }
+    return null;
 }
 
 /**

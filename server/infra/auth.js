@@ -28,7 +28,8 @@ export const authenticateToken = async (req, res, next) => {
         try {
             decoded = jwt.verify(token, JWT_SECRET);
         } catch (err) {
-            return res.status(403).json({ success: false, message: '令牌无效或已过期' });
+            // 401（非 403）：令牌无效/过期属于「未认证」，前端 client.ts 只在 401 时清 token 并跳登录页
+            return res.status(401).json({ success: false, message: '令牌无效或已过期' });
         }
 
         // 若 Token 带 jti，检查会话是否被吊销

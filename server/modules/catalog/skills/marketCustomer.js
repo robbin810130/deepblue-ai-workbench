@@ -90,6 +90,14 @@ export const marketCustomerSkills = [
         workflow_version: '1.0',
         execution_mode: 'blocking',
         requires_confirmation: false,
+        // 🔴 不参与对话式入口（2026-09-20 P1-4 实测裁定）
+        // 本技能绑定「批量整理客户名称特征映射」，其 Dify start 变量是
+        //   customer_batch_json (paragraph, 必填) = [{"id":"C001","name":"某某公司"}, ...]
+        // 且 LLM 提示词要求「不可遗漏任何 id、不可改变原始 id」—— 实测输出按 id 精确回填。
+        // id 只能来自业务库客户表主键，所以它本质是「读全量客户 → 批量脱敏打标 → 回写」的数据作业，
+        // 不是「聊一句办一件事」。单值输入在语义上不成立（没有 id，结果无处回写）。
+        // → 保持表单/任务中心入口，见 legacy.routes。
+        conversational: false,
         supported_files: [],
         input_schema: {
             type: 'object',
@@ -158,6 +166,17 @@ export const marketCustomerSkills = [
         workflow_version: '1.0',
         execution_mode: 'async',
         requires_confirmation: false,
+        // 🔴 不参与对话式入口（2026-09-20 P1-4 实测裁定）
+        // 本技能绑定「出行搭子运营数据合并（广告-专区-We分析）」，是纯数据工程 ETL：
+        //   start → code 解析数据与ID匹配 → LLM 语义匹配(专区) → code 清理
+        //         → LLM 语义匹配(We分析) → code 清理 → code 最终合并 → end
+        // 其 Dify start 变量为 ad_json / summary_json / zone_json（必填）+ we_json（选填），
+        // 代码里是 json.loads 硬解析（非 JSON 直接抛异常、整条工作流挂掉），
+        // 变量 label 亦明示是「概述表数据(JSON)/广告位数据(JSON)/专区页数据(JSON)/We分析推广数据(JSON)」
+        // —— 即四份不同报表的导出文件，靠 id 做多表关联后合并。
+        // manifest 里原本声明的 period 是错误残留（该应用根本不需要周期）。
+        // → 保留「上传多份报表」的表单入口，见 legacy.routes。
+        conversational: false,
         supported_files: ['.xlsx', '.xls', '.csv'],
         input_schema: {
             type: 'object',
@@ -235,24 +254,42 @@ export const marketCustomerSkills = [
         execution_mode_note:
             '迁移期保留同步调用（现有实现即为同步返回）。待任务中心落地后按文档 03 §7 迁移为 async。',
         requires_confirmation: false,
-        supported_files: ['.pdf', '.docx'],
+        // 2026-09-20 P1-4：Dify「大客户档案」start 节点只有 prompt 一个变量，无文件入参
+        supported_files: [],
         input_schema: {
             type: 'object',
             properties: {
-                account_name: { type: 'string', title: '客户名称' },
-                file: { type: 'string', format: 'binary', title: '客户资料文件' },
-                notes: { type: 'string', title: '补充说明' },
+                // 🔴 key 必须严格等于 Dify 应用 start 节点变量名 prompt（2026-09-20 P1-4 对齐）
+                // 该应用的 LLM 提示词要的是「客户原始信息」一整段（接触记录 / 基本资料 / 组织架构 /
+                // 业务需求 / 技术环境 / 推进障碍 / 我方动作 / 方案），并强调「严格忠实于输入、
+                // 缺失即留空填『未提供』」。
+                // ⚠️ 原先声明的 account_name（只给一个客户名）会让输出满屏「未提供」，档案等于废纸。
+                prompt: {
+                    type: 'string',
+                    title: '客户原始资料',
+                    description:
+                        '把这个客户的资料整段发我：公司全称 / 行业 / 规模、接触记录与阶段、组织架构与决策人、业务痛点与需求、现有系统技术环境、推进障碍、我方已做的动作与方案。缺失的部分我会留「未提供」。',
+                },
             },
-            required: ['account_name'],
+            required: ['prompt'],
         },
         output_schema: {
+            // 2026-09-20 P1-5：原声明 summary/tags/strategy 与该应用真实输出**不一致** ——
+            // 实测（本机真跑）应用返回的是一份 8 字段档案，全部落进 _extra、结果卡片渲染为空。
+            // 这里按**真实输出**声明，normalizer.mapToSchema 才会把它们提到顶层供卡片展示。
+            // ⚠️ output_schema 仅用于字段挑选，不强制 required —— 缺失字段填「未提供」属正常。
             type: 'object',
             properties: {
-                summary: { type: 'string', title: '客户画像摘要' },
-                tags: { type: 'array', items: { type: 'string' }, title: '标签' },
-                strategy: { type: 'array', items: { type: 'string' }, title: '维护策略' },
+                basic_info: { type: 'string', title: '基本资料' },
+                org_structure: { type: 'string', title: '组织架构' },
+                presales: { type: 'string', title: '售前接触记录' },
+                business_needs: { type: 'string', title: '业务需求' },
+                tech_integration: { type: 'string', title: '技术对接情况' },
+                presales_pain_points: { type: 'string', title: '推进障碍' },
+                youshi_involvement: { type: 'string', title: '我方动作' },
+                solution: { type: 'string', title: '方案' },
             },
-            required: ['summary'],
+            required: [],
         },
         binding_key: 'key_account',
         artifact_kind: 'json',

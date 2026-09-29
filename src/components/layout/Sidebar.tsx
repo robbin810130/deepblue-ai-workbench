@@ -10,9 +10,11 @@
  *   内容   仅一级导航 + 底部品牌卡 + 系统设置（不放业务说明）
  */
 import { Link, useLocation } from 'react-router-dom';
-import { ChevronRight, Sparkles, Zap } from 'lucide-react';
+import { ChevronRight, History, Zap } from 'lucide-react';
 import { FOOTER_NAV, PRIMARY_NAV, type NavItem } from '../../config/navItems';
 import { cn } from '../../components/ui/cn';
+import { BrandMark } from '../brand/BrandMark';
+import { LEGACY_PREFIX } from '../../app/basePath';
 
 function isItemActive(item: NavItem, pathname: string): boolean {
   const prefixes = item.matchPrefixes ?? [item.to];
@@ -58,11 +60,12 @@ export function Sidebar() {
     <aside className="dw-scroll flex h-full w-[232px] shrink-0 flex-col overflow-y-auto bg-gradient-to-b from-sidebar-from to-sidebar-to">
       {/* 品牌区 */}
       <div className="flex h-[60px] shrink-0 items-center gap-2.5 px-5">
-        <div className="flex h-8 w-8 items-center justify-center rounded-[9px] bg-gradient-to-br from-primary-400 to-primary-600 shadow-[0_2px_8px_rgba(47,107,255,0.45)]">
-          <Sparkles size={17} className="text-white" strokeWidth={2.2} />
-        </div>
+        <BrandMark
+          size={32}
+          className="shrink-0 drop-shadow-[0_2px_8px_rgba(47,107,255,0.45)]"
+        />
         <span className="text-[15px] font-semibold tracking-[-0.2px] text-white">
-          NanGuang AI
+          DeepBlue AI
         </span>
       </div>
 
@@ -103,6 +106,21 @@ export function Sidebar() {
               active={isItemActive(item, pathname)}
             />
           ))}
+
+          {/* 旧版桌面系统入口（/legacy）。整页跳转、且新版用的是 BrowserRouter，
+              故用原生 <a> 而非 <Link>（Link 只会改前端路由，跳不出新界面）。 */}
+          <a
+            href={LEGACY_PREFIX}
+            title="返回旧版桌面系统（原「登录 → 桌面」入口）"
+            className={cn(
+              'group flex h-10 items-center gap-3 rounded-[10px] px-3 text-lead transition-colors',
+              'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40',
+              'text-sidebar-fg-soft hover:bg-white/[0.07] hover:text-white',
+            )}
+          >
+            <History size={18} strokeWidth={1.8} className="shrink-0" />
+            <span className="truncate">旧版入口</span>
+          </a>
         </div>
       </div>
     </aside>

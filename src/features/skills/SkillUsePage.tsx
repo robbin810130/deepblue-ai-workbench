@@ -9,13 +9,15 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Play, Upload, X } from 'lucide-react';
+import { ArrowLeft, ClipboardList, MessageSquare, Play, Upload, X } from 'lucide-react';
 import { cn } from '../../components/ui/cn';
 import {
   api,
   ApiError,
   type ApiSkill,
 } from '../../api/client';
+import { ChatPanel } from '../chat/ChatPanel';
+import { DashboardCenterPanel } from '../business-analysis/DashboardCenterPanel';
 
 interface UploadedFile {
   file_id: string;
@@ -48,6 +50,8 @@ export function SkillUsePage() {
   const [uploading, setUploading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // 对话式改造 P0：chat_enabled 技能默认对话模式，可切回表单模式
+  const [mode, setMode] = useState<'chat' | 'form'>('form');
 
   useEffect(() => {
     if (!skillKey) return;
@@ -56,6 +60,12 @@ export function SkillUsePage() {
       .then(setSkill)
       .catch((e) => setError(e instanceof ApiError ? `${e.code}: ${e.message}` : e.message));
   }, [skillKey]);
+
+  useEffect(() => {
+    // 对话式改造 P1：chat 类（直连对话）与 workflow 类（对话收集参数）都默认进对话模式，
+    // 表单模式作为「熟练用户的快捷键」保留
+    if (skill) setMode(skill.interactive_enabled ? 'chat' : 'form');
+  }, [skill]);
 
   const fields = useMemo(() => {
     if (!skill) return [];
@@ -114,8 +124,19 @@ export function SkillUsePage() {
   const needFile = required.size > 0 && fields.some((f) => widgetOf(f) === 'file' && required.has(f.key));
   const canExecute = !submitting && !uploading && missing.length === 0 && (!needFile || files.length > 0);
 
+  // 视图型技能（interaction_mode='view'）：没有「执行」语义，渲染专属面板。
+  // 目前只有 dashboard_center（业务看板）→ 看板列表/预览面板。
+  const isViewPanel = skill.interaction_mode === 'view';
+  const viewPanel =
+    skill.view_panel === 'business_dashboard_center' ? <DashboardCenterPanel /> : null;
+
   return (
-    <div className="mx-auto w-full max-w-[760px] px-8 py-7">
+    <div
+      className={cn(
+        'mx-auto w-full px-8 py-7',
+        mode === 'chat' || isViewPanel ? 'max-w-[1120px]' : 'max-w-[760px]',
+      )}
+    >
       <Link
         to={`/scenes/${skill.scene}`}
         className="inline-flex items-center gap-1 text-caption text-ink-soft transition-colors hover:text-ink"
@@ -128,14 +149,42 @@ export function SkillUsePage() {
           <h1 className="text-title font-semibold text-ink">{skill.name}</h1>
           <p className="mt-1.5 max-w-[560px] text-lead text-ink-soft">{skill.summary}</p>
         </div>
-        <div className="flex shrink-0 flex-col items-end gap-1">
-          <span className="rounded-md bg-surface-sunken px-2 py-1 text-[11px] text-ink-soft">
-            {skill.execution_mode === 'async' ? '异步执行' : '同步执行'}
-          </span>
-          {skill.requires_confirmation && (
-            <span className="rounded-md bg-warning-soft px-2 py-1 text-[11px] text-warning">需人工确认</span>
+        <div className="flex shrink-0 flex-col items-end gap-1.5">
+          {skill.interactive_enabled && (
+            <div className="flex rounded-[10px] bg-surface-sunken p-0.5">
+              <button
+                type="button"
+                onClick={() => setMode('chat')}
+                className={cn(
+                  'inline-flex h-7 items-center gap-1 rounded-lg px-2.5 text-caption transition-colors',
+                  mode === 'chat' ? 'bg-surface font-medium text-ink shadow-sm' : 'text-ink-soft hover:text-ink',
+                )}
+              >
+                <MessageSquare size={12} /> {skill.interaction_mode === 'slot' ? '对话填写' : '对话模式'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode('form')}
+                className={cn(
+                  'inline-flex h-7 items-center gap-1 rounded-lg px-2.5 text-caption transition-colors',
+                  mode === 'form' ? 'bg-surface font-medium text-ink shadow-sm' : 'text-ink-soft hover:text-ink',
+                )}
+              >
+                <ClipboardList size={12} /> 表单模式
+              </button>
+            </div>
           )}
-          {!skill.live && <span className="rounded-md bg-danger-soft px-2 py-1 text-[11px] text-danger">未开放</span>}
+          <div className="flex items-center gap-1">
+            {!isViewPanel && (
+              <span className="rounded-md bg-surface-sunken px-2 py-1 text-[11px] text-ink-soft">
+                {skill.execution_mode === 'async' ? '异步执行' : '同步执行'}
+              </span>
+            )}
+            {!isViewPanel && skill.requires_confirmation && (
+              <span className="rounded-md bg-warning-soft px-2 py-1 text-[11px] text-warning">需人工确认</span>
+            )}
+            {!skill.live && <span className="rounded-md bg-danger-soft px-2 py-1 text-[11px] text-danger">未开放</span>}
+          </div>
         </div>
       </div>
 
@@ -145,6 +194,22 @@ export function SkillUsePage() {
         </p>
       )}
 
+      {/* 视图型技能：直接渲染专属面板（无表单、无任务、无对话） */}
+      {isViewPanel ? (
+        viewPanel
+      ) : /* 对话模式（interactive_enabled 技能默认）：
+          chat 类 = 直连 Dify 多轮对话；workflow 类 = 对话收集参数后执行 */
+      mode === 'chat' && skill.interactive_enabled ? (
+        <div className="mt-5 h-[calc(100vh-260px)] min-h-[440px]">
+          <ChatPanel
+            skillKey={skill.skill_key}
+            skillName={skill.name}
+            supportedFiles={skill.supported_files}
+            interactionMode={skill.interaction_mode === 'slot' ? 'slot' : 'chat'}
+          />
+        </div>
+      ) : (
+        <>
       {/* 动态表单 */}
       <div className="mt-5 space-y-4 rounded-xl border border-line bg-surface px-5 py-5">
         {fields.length === 0 && <p className="text-caption text-ink-faint">该技能无需填写参数。</p>}
@@ -266,6 +331,8 @@ export function SkillUsePage() {
           </span>
         )}
       </div>
+        </>
+      )}
     </div>
   );
 }

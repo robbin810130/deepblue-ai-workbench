@@ -247,5 +247,8 @@ export function toApiShape(skill) {
         output_schema: skill.output_schema,
         permission: skill.permission,
         live: skill.live,
+        // 「视图型技能」声明的前端面板名（如 dashboard_center → business_dashboard_center）。
+        // 无此声明 = 普通技能（表单 / 对话 / 槽位），前端不得据此改变行为。
+        view_panel: skill.view_panel || null,
     };
 }

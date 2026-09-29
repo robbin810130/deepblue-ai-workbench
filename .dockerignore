@@ -9,6 +9,12 @@ dist.next
 dist.next-release
 dist-ssr
 
+# Windows 打包发布产物与中间目录（server 运行时完全不引用）
+# 2026-09-21 补：不排除时上下文 753MB，docker build 会因内存压力被杀（failed to execute bake: signal: killed）
+release
+.release-cache
+.release-stage
+
 # 敏感与临时
 .env
 .env.*

@@ -183,9 +183,13 @@ router.post('/publish', parseMultipart, async (req, res) => {
             fs.mkdirSync(businessDashboardStorageDir, { recursive: true });
             fs.writeFileSync(tmpFile, htmlContent, 'utf8'); // 强制 UTF-8（文档 §21）
 
-            const baseUrl = (process.env.APP_BASE_URL || '').replace(/\/+$/, '');
+            // 🔴 2026-09-21 修正：一律存「站点相对路径」，不再用 APP_BASE_URL 拼绝对地址。
+            //    曾用 APP_BASE_URL=http://localhost:8081 拼成绝对 URL 落库，结果换端口/换机
+            //    （宿主 8090、客户私有化域名）后所有看板链接 404 —— 数据库里的地址成了
+            //    「发布那一刻的机器」的快照。相对路径由浏览器按当前 origin 解析，
+            //    前端 href / iframe src 均直接可用，也天然兼容反代子路径。
             const htmlPath = `/dashboard-files/${dashboardId}/index.html`;
-            const viewUrl = baseUrl ? `${baseUrl}${htmlPath}` : htmlPath; // 未配置 APP_BASE_URL 时返回相对路径
+            const viewUrl = htmlPath;
 
             const inserted = await pool.query(
                 `INSERT INTO business_dashboard
@@ -281,6 +285,24 @@ router.post('/chat-submit', async (req, res) => {
     }
 });
 
+// 产物落盘检测：DB 行存在但磁盘文件缺失（交付还原只带了库、没带卷）时，
+// 前端必须能如实标注，而不是给一个点开就是 404 的卡片。
+//
+// ⚠️ 这个判定只在「文件确实归本进程所见的目录」时才有意义：
+//   看板 HTML 由 Dify 容器写入卷 `*-webos-dashboards`，只有**挂了该卷的后端**（容器里的
+//   webos-backend:8081）才看得到。宿主上直接跑 dev 后端（:3002）时该目录根本不存在 ——
+//   此时若一律返回 false，会把所有卡片都标成「产物缺失」（误导）。
+//   ⇒ 目录不存在 → 返回 null（未知），前端不显示缺失标记；目录存在 → 返回布尔真值。
+const withFileExists = (rows) => {
+    const storageDirExists = fs.existsSync(businessDashboardStorageDir);
+    return rows.map((r) => ({
+        ...r,
+        file_exists: storageDirExists
+            ? fs.existsSync(path.join(businessDashboardStorageDir, r.dashboard_id, 'index.html'))
+            : null,
+    }));
+};
+
 // ─── 列表 API ─────────────────────────────────────────────────
 // GET /api/business-dashboard?keyword=&domain=&page=1&page_size=20
 router.get('/', async (req, res) => {
@@ -312,7 +334,7 @@ router.get('/', async (req, res) => {
         const total = (await pool.query(`SELECT COUNT(*)::int AS cnt FROM business_dashboard WHERE ${where}`, params)).rows[0].cnt;
         params.push(pageSize, (page - 1) * pageSize);
         const rows = (await pool.query(
-            `SELECT dashboard_id, title, domain, description, view_url, source, allowed_roles, published_at
+            `SELECT dashboard_id, title, domain, description, html_path, view_url, source, allowed_roles, published_at
              FROM business_dashboard
              WHERE ${where}
              ORDER BY published_at DESC
@@ -320,7 +342,7 @@ router.get('/', async (req, res) => {
             params
         )).rows;
 
-        return res.json({ success: true, data: { items: rows, total, page, page_size: pageSize } });
+        return res.json({ success: true, data: { items: withFileExists(rows), total, page, page_size: pageSize } });
     } catch (err) {
         return fail(res, 500, 'INTERNAL_ERROR', '获取看板列表失败');
     }
@@ -351,7 +373,7 @@ router.get('/:dashboardId', async (req, res, next) => {
                 return fail(res, 404, 'NOT_FOUND', '看板不存在或已删除');
             }
         }
-        return res.json({ success: true, data: rows.rows[0] });
+        return res.json({ success: true, data: withFileExists(rows.rows)[0] });
     } catch (err) {
         return fail(res, 500, 'INTERNAL_ERROR', '获取看板详情失败');
     }
@@ -438,23 +460,28 @@ router.put('/:dashboardId/roles', async (req, res) => {
 router.delete('/:id', async (req, res) => {
     try {
         if (req.user?.role !== 'admin') {
-            return res.status(403).json({ success: false, message: 'ֻ�й���Ա����ɾ������' });
+            return res.status(403).json({ success: false, message: '只有管理员可以删除看板' });
         }
-        const dashboardId = req.params.id;
+        // 🔴 2026-09-21 修正：dashboard_id 必须匹配 d_<短码> 才允许进入文件删除分支，
+        //    否则 `../..` 之类会被拼进存储目录造成越界删除。原实现还会在 ESM 下
+        //    调 `require('path')` 直接抛 ReferenceError（整个删除接口 500）。
+        const dashboardId = String(req.params.id || '').trim();
+        if (!/^d_[a-z0-9]+$/.test(dashboardId)) {
+            return res.status(400).json({ success: false, message: '无效的看板 ID' });
+        }
         const result = await pool.query('DELETE FROM business_dashboard WHERE dashboard_id = $1 RETURNING dashboard_id', [dashboardId]);
         if (result.rowCount === 0) {
-            return res.status(404).json({ success: false, message: '���岻����' });
+            return res.status(404).json({ success: false, message: '看板不存在' });
         }
-        // ����ɾ�������ļ�
+        // 同步删除磁盘产物（失败不阻断：DB 已删，残留目录无引用）
         try {
-            const fsPath = require('path').join(businessDashboardStorageDir, dashboardId);
-            require('fs').rmSync(fsPath, { recursive: true, force: true });
-        } catch(e) {
+            fs.rmSync(path.join(businessDashboardStorageDir, dashboardId), { recursive: true, force: true });
+        } catch {
             // ignore file delete error
         }
-        return res.json({ success: true, message: 'ɾ���ɹ�' });
+        return res.json({ success: true, message: '删除成功' });
     } catch (err) {
-        return res.status(500).json({ success: false, message: 'ɾ��ʧ��' });
+        return res.status(500).json({ success: false, message: '删除失败' });
     }
 });
 

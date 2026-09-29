@@ -4,48 +4,52 @@
  * 约定：
  *   - JWT 取旧系统同一存储键 blue_os_token（登录入口不重复做，复用旧登录页）
  *   - 响应统一解包 { success, data }；失败抛 ApiError（code/message 来自后端错误模型）
- *   - 401 → 清 token 回旧登录页；若当前处于 /next 下则附带 ?redirect= 以便登录后回跳
+ *   - 401 → 清 token 并把用户送到旧登录页（/legacy）；新界面自身没有登录页
  */
+
+import { LEGACY_PREFIX, isLegacyPath } from '../app/basePath';
 
 const TOKEN_KEY = 'blue_os_token';
 
 /** 登录回跳参数名（LoginScreen 侧同源读取，改名需同步两处） */
 export const REDIRECT_PARAM = 'redirect';
 
-/** 新版工作台路由前缀；此前缀下的会话失效需要登录后回跳 */
-const NEXT_PREFIX = '/next';
-
 /**
  * 会话失效统一处理：清 token 并把用户送到登录页。
  *
- * 为什么不直接 `location.href = '/'`：
- *   旧系统本身就是登录页，回 `/` 就够；但 /next 是新入口，它没有自己的登录页，
- *   一旦被踢回 `/`，用户登录后只会落在旧桌面系统，永远回不到 /next —— 表现为
- *   「新界面打不开 / 登录完还是旧系统」。故 /next 下需带上回跳地址。
+ * 2026-09-21 入口切换后：新版工作台占据根路径，自带登录页的旧桌面系统退到 /legacy。
+ * 新界面没有自己的登录页，401 时必须带着回跳地址送到 /legacy，否则用户登录后
+ * 只会落在旧桌面系统 —— 表现为「新界面打不开 / 登录完还是旧系统」。
  *
- * 防死循环：回跳地址只允许站内相对路径且必须以 /next 开头，登录后再次 401
- * 也会重新带上 redirect，不会指向 `/?redirect=...` 自身。
+ * 两处分流：
+ *   新界面区（根路径等）→ 送到 /legacy?redirect=<当前地址>，登录后整页回跳；
+ *   旧界面区（/legacy 下）→ 整页刷新回 /legacy，由 App.tsx 重新判定登录态。
+ *
+ * 防死循环：回跳地址只允许站内相对路径且不指向 /legacy 自身；刷新回 /legacy 后
+ * token 已清，只会落到登录视图，不会再发 API 请求。
  */
 function redirectToLogin(): void {
   const { pathname, search } = window.location;
-  if (pathname === NEXT_PREFIX || pathname.startsWith(`${NEXT_PREFIX}/`)) {
-    const back = encodeURIComponent(`${pathname}${search}`);
-    window.location.href = `/?${REDIRECT_PARAM}=${back}`;
+  if (isLegacyPath(pathname)) {
+    // 旧界面区（/legacy）：整页刷新回自身。token 已被清，刷新后 App.tsx 重新判定
+    // 登录态并落到登录视图 —— 与改造前「非 /next 路径就回 '/'」的行为等价，
+    // 避免出现「token 没了但界面还停在桌面」的僵尸态。
+    window.location.href = LEGACY_PREFIX;
     return;
   }
-  window.location.href = '/';
+  const back = encodeURIComponent(`${pathname}${search}`);
+  window.location.href = `${LEGACY_PREFIX}?${REDIRECT_PARAM}=${back}`;
 }
 
 /**
  * 供旧版 fetchWithAuth（src/utils/authFetch.ts）复用的会话失效处理。
  *
  * 旧实现只 removeItem + dispatch('auth-unauthorized')，靠旧 App.tsx 监听事件切回登录页；
- * 但 /next 下没有这个监听者，token 被静默删除、页面既不跳转也不报错。
- * 故：/next 下直接跳登录页（带回跳），其余路径交回旧行为。
+ * 但新界面（根路径）下没有这个监听者，token 被静默删除、页面既不跳转也不报错。
+ * 故：新界面下直接跳登录页（带回跳），/legacy 交回旧行为。
  */
 export function handleUnauthorized(): void {
-  const { pathname } = window.location;
-  if (pathname === NEXT_PREFIX || pathname.startsWith(`${NEXT_PREFIX}/`)) {
+  if (!isLegacyPath(window.location.pathname)) {
     redirectToLogin();
   }
 }
@@ -53,8 +57,8 @@ export function handleUnauthorized(): void {
 /**
  * 读取并消费登录回跳地址（登录成功后调用，返回值非空即应整页跳转）。
  *
- * 安全：经 URL 规范化后再校验同源 + /next 前缀，可挡掉 `//evil.com`、
- * `https://evil.com`、`/next/../evil` 之类的开放重定向构造。
+ * 安全：经 URL 规范化后再校验同源 + 站内路径 + 不指向 /legacy 自身，
+ * 可挡掉 `//evil.com`、`https://evil.com`、`/legacy/../evil` 之类的开放重定向构造。
  */
 export function consumeLoginRedirect(): string | null {
   const raw = new URLSearchParams(window.location.search).get(REDIRECT_PARAM);
@@ -66,7 +70,9 @@ export function consumeLoginRedirect(): string | null {
     return null;
   }
   if (url.origin !== window.location.origin) return null;
-  if (url.pathname !== NEXT_PREFIX && !url.pathname.startsWith(`${NEXT_PREFIX}/`)) return null;
+  // 只回跳新界面：/legacy 自身不回跳（登录页就在那，跳过去等于原地打转）
+  if (isLegacyPath(url.pathname)) return null;
+  if (!url.pathname.startsWith('/')) return null;
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
@@ -207,7 +213,214 @@ export interface ApiSkill {
   permission_status?: 'granted' | 'denied' | 'not_evaluated';
   permission_status_reason?: string;
   input_kind?: string;
+  /** 绑定的执行形态（workflow/chat/none…），对话式改造 P0 新增 */
+  endpoint_kind?: string | null;
+  /** 是否支持对话模式（provider=dify 且 endpoint_kind=chat） */
+  chat_enabled?: boolean;
+  /** 是否支持「对话式参数收集」模式（endpoint_kind=workflow，P1 新增） */
+  slot_enabled?: boolean;
+  /** 交互模式判据：chat = 直连对话；slot = 对话收集参数后执行；view = 专属视图面板（无执行语义）；null = 仅表单 */
+  interaction_mode?: 'chat' | 'slot' | 'view' | null;
+  /** = interaction_mode !== null，前端据此决定默认进入对话模式 */
+  interactive_enabled?: boolean;
+  /** 视图型技能的面板标识（interaction_mode='view' 时非空），前端据此选渲染哪个面板 */
+  view_panel?: string | null;
 }
+
+/* ────────────────────────── 对话式技能（P0） ────────────────────────── */
+
+export interface ApiChatSession {
+  id: number;
+  user_id: number;
+  skill_key: string;
+  title: string;
+  dify_conversation_id: string | null;
+  /** chat = 直连 Dify 对话；slot = 本地收集参数后执行 workflow（P1） */
+  mode?: 'chat' | 'slot';
+  /** 槽位收集进度：{ inputs, last_ask, extractor } */
+  slot_state?: { inputs?: Record<string, unknown>; last_ask?: string[]; extractor?: string | null } | null;
+  /** 已提交执行的任务编号（tasks.id 是 UUID） */
+  task_id?: string | null;
+  /** collecting → ready → executing → done */
+  status?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 参数收集卡片（meta.kind = 'slot_ask' / 'slot'） */
+export interface ApiSlotItem {
+  key: string;
+  title: string;
+  description?: string;
+  type?: string;
+  enum?: string[] | null;
+  required?: boolean;
+  is_file?: boolean;
+  value?: unknown;
+}
+
+export interface ApiSlotCard {
+  kind: 'slot';
+  skill_key: string;
+  skill_name: string;
+  filled: ApiSlotItem[];
+  missing: ApiSlotItem[];
+  optional_missing?: ApiSlotItem[];
+  ask_keys?: string[];
+  all_slots: ApiSlotItem[];
+  ready: boolean;
+  filled_count: number;
+  total_count: number;
+}
+
+/** 执行结果卡片（meta.kind = 'result'） */
+export interface ApiResultCard {
+  kind: 'result';
+  task_id: string | null;
+  task_no: string | null;
+  status: string;
+  summary: string | null;
+  fields: Array<{ key: string; value: unknown }>;
+  warnings: string[];
+  can_retry: boolean;
+  skill_name: string | null;
+}
+
+export type ApiMessageMeta =
+  | (ApiSlotCard & { source?: string; extractor?: string; degraded?: boolean })
+  | ApiResultCard
+  | ApiHumanInputCard
+  | ApiHumanActionMeta
+  | { kind: 'human_done'; form_token?: string }
+  | null;
+
+/**
+ * 人工介入卡片（meta.kind = 'human_input'）—— chatflow 在「人工介入」节点暂停，
+ * 等用户点按钮才继续。`actions` 是 Dify 表单声明的按钮，点哪个由后端提交给 Dify。
+ *
+ * submitted=true 表示这张表单已经被处理过（刷新后按钮不再可点，只留痕迹）。
+ */
+export interface ApiHumanInputAction {
+  id: string;
+  title: string;
+  button_style?: string;
+}
+
+export interface ApiHumanInputCard {
+  kind: 'human_input';
+  form_token: string;
+  form_content: string;
+  node_title: string;
+  actions: ApiHumanInputAction[];
+  submitted?: boolean;
+}
+
+/** 用户点击人工介入按钮留下的记录（meta.kind = 'human_action'） */
+export interface ApiHumanActionMeta {
+  kind: 'human_action';
+  action: string;
+  form_token: string;
+}
+
+export interface ApiChatMessage {
+  id: number;
+  session_id: number;
+  role: 'user' | 'assistant';
+  content: string;
+  files?: Array<{ file_id: string; name?: string }> | null;
+  meta?: ApiMessageMeta;
+  created_at: string;
+}
+
+/**
+ * 发消息（SSE 流式）。
+ * 与 request() 同源的鉴权/401 处理，但响应是 text/event-stream，
+ * 逐事件回调而不是整包返回。
+ */
+export async function streamChatMessage(
+  sessionId: number,
+  body: { query?: string; files?: Array<{ file_id: string; name?: string }> },
+  handlers: {
+    onDelta: (text: string) => void;
+    /** slot 模式：参数收集状态卡（进度/缺失/是否可执行） */
+    onSlot?: (card: ApiSlotCard) => void;
+    /** chat 模式：chatflow 暂停，需要用户选出后续动作（人工介入） */
+    onHumanInput?: (card: ApiHumanInputCard) => void;
+    onDone?: (d: {
+      message_id: number;
+      conversation_id?: string | null;
+      answer?: string;
+      /** slot 模式：参数是否已收集完整 */
+      ready?: boolean;
+      /** slot 模式：实际生效的提取器（llm / rules） */
+      extractor?: string;
+      degraded?: boolean;
+      card?: ApiSlotCard | ApiHumanInputCard;
+      /** chat 模式：流以「暂停等人工介入」收尾，需要用户点按钮才继续 */
+      pending?: boolean;
+    }) => void;
+    onError?: (message: string) => void;
+  },
+  signal?: AbortSignal,
+): Promise<void> {
+  const res = await fetch(`/api/v1/chat/sessions/${sessionId}/messages`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${getToken()}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  if (res.status === 401) {
+    localStorage.removeItem(TOKEN_KEY);
+    redirectToLogin();
+    throw new ApiError('AUTH_REQUIRED', '登录已失效，请重新登录', 401);
+  }
+
+  // 进入 SSE 之前的失败是标准 JSON 信封
+  const contentType = res.headers.get('content-type') || '';
+  if (!contentType.includes('text/event-stream')) {
+    let message = `请求失败（HTTP ${res.status}）`;
+    let code = 'INTERNAL_ERROR';
+    try {
+      const b = await res.json();
+      code = b?.error?.code || code;
+      message = b?.error?.message || message;
+    } catch {
+      /* 保留默认错误 */
+    }
+    throw new ApiError(code, message, res.status);
+  }
+
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let sep: number;
+    while ((sep = buffer.indexOf('\n\n')) !== -1) {
+      const chunk = buffer.slice(0, sep);
+      buffer = buffer.slice(sep + 2);
+      const line = chunk.split('\n').find((l) => l.startsWith('data:'));
+      if (!line) continue;
+      try {
+        const evt = JSON.parse(line.slice(5).trim());
+        if (evt.event === 'delta') handlers.onDelta(evt.text || '');
+        else if (evt.event === 'slot') handlers.onSlot?.(evt.card);
+        else if (evt.event === 'human_input') handlers.onHumanInput?.(evt.card);
+        else if (evt.event === 'done') handlers.onDone?.(evt);
+        else if (evt.event === 'error') handlers.onError?.(evt.message || '对话失败');
+      } catch {
+        /* 跳过无法解析的事件 */
+      }
+    }
+  }
+}
+
 
 export const api = {
   // 场景
@@ -258,6 +471,63 @@ export const api = {
     request<ApiTask>(`/api/v1/tasks/${id}`, { method: 'PATCH', body: json(p) }),
   deleteTask: (id: string) => request<{ deleted: boolean }>(`/api/v1/tasks/${id}`, { method: 'DELETE' }),
   getMetrics: () => request<TaskMetrics>('/api/v1/tasks/metrics'),
+
+  // 对话式技能（P0；发消息走上方 streamChatMessage，SSE 协议）
+  chat: {
+    createSession: (p: { skill_key: string; title?: string }) =>
+      request<ApiChatSession>('/api/v1/chat/sessions', { method: 'POST', body: json(p) }),
+    listSessions: (skillKey?: string) =>
+      request<ApiChatSession[]>(
+        `/api/v1/chat/sessions${skillKey ? `?skill_key=${encodeURIComponent(skillKey)}` : ''}`,
+      ),
+    getMessages: (sessionId: number) =>
+      request<{ session: ApiChatSession; messages: ApiChatMessage[] }>(
+        `/api/v1/chat/sessions/${sessionId}/messages`,
+      ),
+    renameSession: (sessionId: number, title: string) =>
+      request<ApiChatSession>(`/api/v1/chat/sessions/${sessionId}`, {
+        method: 'PATCH',
+        body: json({ title }),
+      }),
+    deleteSession: (sessionId: number) =>
+      request<{ deleted: boolean }>(`/api/v1/chat/sessions/${sessionId}`, { method: 'DELETE' }),
+
+    /** slot 模式：手动补充/修改参数（对话内「一次填完」卡片） */
+    updateSlots: (sessionId: number, inputs: Record<string, unknown>, silent = false) =>
+      request<{ inputs: Record<string, unknown>; ready: boolean; card: ApiSlotCard; message_id: number | null }>(
+        `/api/v1/chat/sessions/${sessionId}/slots`,
+        { method: 'PATCH', body: json({ inputs, silent }) },
+      ),
+
+    /** slot 模式：参数齐了之后提交执行（异步；结果靠 getExecution 轮询） */
+    execute: (sessionId: number) =>
+      request<{ task_id: string; task_no: string; status: string; message_id: number }>(
+        `/api/v1/chat/sessions/${sessionId}/execute`,
+        { method: 'POST' },
+      ),
+
+    /** slot 模式：轮询执行结果（任务终态时幂等落一条结果卡片消息） */
+    getExecution: (sessionId: number) =>
+      request<{ status: string; task_id: string | null; message_id: number | null; card: ApiResultCard | null }>(
+        `/api/v1/chat/sessions/${sessionId}/execution`,
+      ),
+
+    /**
+     * chat 模式：提交人工介入动作（点 Dify 表单上的按钮）。
+     * 后端提交后轮询续跑结果，返回下一张表单（paused）或最终回复（finished）；
+     * status='running' 表示超时仍在跑 —— 动作已生效，稍后重取会话消息即可。
+     */
+    submitHumanInput: (sessionId: number, action: string) =>
+      request<{
+        status: 'paused' | 'finished' | 'running';
+        message_id: number | null;
+        card?: ApiHumanInputCard;
+        answer?: string;
+      }>(`/api/v1/chat/sessions/${sessionId}/human-input`, {
+        method: 'POST',
+        body: json({ action }),
+      }),
+  },
 
   // 通知
   listNotifications: (params: { unread_only?: boolean; todos_only?: boolean; limit?: number } = {}) => {
@@ -344,6 +614,32 @@ export const api = {
       requestCompat<ApiDashboard>(`/api/dashboards/admin/${id}`, { method: 'PUT', body: json(p) }),
     remove: (id: number) =>
       requestCompat<{ deleted?: boolean }>(`/api/dashboards/admin/${id}`, { method: 'DELETE' }),
+  },
+
+  /* ────────────────── AI 发布的业务看板（Dify 看板生成助手产物） ────────────────── */
+
+  businessDashboard: {
+    list: (p: { page?: number; page_size?: number; status?: 'published' | 'archived'; keyword?: string; domain?: string } = {}) => {
+      const qs = new URLSearchParams();
+      Object.entries(p).forEach(([k, v]) => v !== undefined && v !== '' && qs.set(k, String(v)));
+      const q = qs.toString();
+      return requestCompat<{ items: ApiBusinessDashboard[]; total: number; page: number; page_size: number }>(
+        `/api/business-dashboard${q ? `?${q}` : ''}`,
+      );
+    },
+    detail: (id: string) => requestCompat<ApiBusinessDashboard>(`/api/business-dashboard/${id}`),
+    setStatus: (dashboard_ids: string[], status: 'published' | 'archived') =>
+      requestCompat<{ count?: number }>('/api/business-dashboard/status', {
+        method: 'PUT',
+        body: json({ dashboard_ids, status }),
+      }),
+    setRoles: (id: string, allowed_roles: string[]) =>
+      requestCompat<ApiBusinessDashboard>(`/api/business-dashboard/${id}/roles`, {
+        method: 'PUT',
+        body: json({ allowed_roles }),
+      }),
+    remove: (id: string) =>
+      requestCompat<{ message?: string }>(`/api/business-dashboard/${id}`, { method: 'DELETE' }),
   },
 
   /* ────────────────────────── 管理后台（存量契约 {success,data}） ────────────────────────── */
@@ -586,6 +882,56 @@ export interface ApiDashboard {
   allowed_roles?: string[] | string | null;
   sort_order?: number | null;
   created_at?: string;
+}
+
+/**
+ * AI 发布的业务看板（business_dashboard 表，由 Dify「看板生成助手」发布）。
+ *
+ * `view_url` 历史数据里可能是 http://<发布那一刻的主机>:<端口>/... 的绝对地址，
+ * 换机器/换端口即失效 —— 因此渲染时**优先用 html_path 按当前 origin 拼**，
+ * view_url 仅作兜底。
+ */
+export interface ApiBusinessDashboard {
+  dashboard_id: string;
+  title: string;
+  domain: string;
+  description?: string | null;
+  html_path?: string | null;
+  view_url: string;
+  source: string;
+  allowed_roles: string[] | string | null;
+  published_at: string;
+  /** 磁盘产物是否存在（交付还原可能只带库表、缺 HTML 卷） */
+  /**
+   * 产物是否真实存在于「本后端可见的存储目录」。
+   * - true/false：后端的看板存储目录存在，判定可信；
+   * - null：后端根本没挂载该目录（如宿主上直接跑 dev 后端、文件在容器卷里）→ 判定未知，
+   *   前端不应据此标注「产物缺失」。
+   */
+  file_exists?: boolean | null;
+
+}
+
+/**
+ * 解析看板可访问地址：优先用 html_path 按**当前站点**拼，避免历史数据里
+ * 写死的 `http://localhost:8081/...` 在别的端口/域名下 404。
+ * 两者都没有时才回落原值。
+ */
+export function resolveDashboardUrl(d: Pick<ApiBusinessDashboard, 'html_path' | 'view_url'>): string {
+  const path = d.html_path || '';
+  if (path.startsWith('/')) return `${window.location.origin}${path}`;
+  const raw = d.view_url || '';
+  if (/^https?:\/\//i.test(raw)) {
+    // 绝对地址：同路径不同 Host 时改指向当前站点；纯外部地址原样返回
+    try {
+      const u = new URL(raw);
+      if (u.pathname.startsWith('/dashboard-files/')) return `${window.location.origin}${u.pathname}${u.search}`;
+    } catch {
+      /* ignore */
+    }
+    return raw;
+  }
+  return raw ? `${window.location.origin}${raw.startsWith('/') ? '' : '/'}${raw}` : '';
 }
 
 /* ────────────────────────── 管理后台 ────────────────────────── */

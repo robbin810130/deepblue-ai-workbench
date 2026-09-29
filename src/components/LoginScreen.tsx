@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Monitor, Eye, EyeOff, Loader2, User, Lock } from 'lucide-react';
+import { Eye, EyeOff, Loader2, User, Lock } from 'lucide-react';
+import { BrandMark } from './brand/BrandMark';
 import { APP_TITLE } from '../config';
 import { consumeLoginRedirect } from '../api/client';
 
@@ -156,12 +157,10 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
       >
         {/* Logo + 标题 */}
         <div className="text-center mb-8">
-          <div
-            className="w-16 h-16 mx-auto rounded-2xl flex items-center justify-center mb-4"
-            style={{ background: 'linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%)', boxShadow: '0 8px 24px rgba(99,102,241,0.5)' }}
-          >
-            <Monitor className="text-white w-8 h-8" />
-          </div>
+          <BrandMark
+            size={64}
+            className="mx-auto mb-4 drop-shadow-[0_8px_24px_rgba(31,88,232,0.5)]"
+          />
           <h1 className="text-lg font-semibold text-white/90 leading-snug">{APP_TITLE}</h1>
           <p className="text-white/40 text-xs mt-1.5">
             {willReturnToNext ? '登录后将自动返回新版工作台' : '输入账号与密码以继续'}

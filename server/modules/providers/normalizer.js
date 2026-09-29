@@ -283,6 +283,47 @@ export function normalizeChatResult({ raw, skill, duration_ms, conversation_id }
 }
 
 /**
+ * 从 Provider 原始错误里尽量抠出「人能看懂」的那句话（Dify 的 message 字段）。
+ *
+ * Dify 的 4xx 响应体形如 {"code":"invalid_param","message":"...","status":400}，
+ * 但上游可能已把它包进一句话里（如 `Dify 流式对话接口返回 400：{...}`）。
+ * 这里两种形态都尝试解析；解析不出来就返回空串，由调用方回退到通用文案。
+ *
+ * @param {string} rawMsg
+ * @returns {string} 提取到的原始 message（未截断前可能很长）
+ */
+function extractProviderMessage(rawMsg) {
+    const s = String(rawMsg || '').trim();
+    if (!s) return '';
+    const asJson = (t) => {
+        try {
+            return JSON.parse(t);
+        } catch {
+            return null;
+        }
+    };
+    let obj = asJson(s);
+    if (!obj) {
+        // 形如 "...返回 400：{...}" —— 抠出第一个 { 到最后一个 }
+        const i = s.indexOf('{');
+        const j = s.lastIndexOf('}');
+        if (i >= 0 && j > i) obj = asJson(s.slice(i, j + 1));
+    }
+    if (obj && typeof obj === 'object') {
+        const m = obj.message ?? obj.error ?? obj.msg;
+        if (typeof m === 'string' && m.trim()) return m.trim();
+        if (m !== undefined && m !== null) {
+            try {
+                return JSON.stringify(m);
+            } catch {
+                /* ignore */
+            }
+        }
+    }
+    return '';
+}
+
+/**
  * 把 Provider 侧的错误归一化为**文档 03 §11 规定的错误码**。
  *
  * 现状问题：status 500 一律 `res.status(500).json({error: err.message})`，
@@ -311,7 +352,15 @@ export function normalizeError(err) {
         };
     }
     if (status >= 400 && status < 500) {
-        return { code: 'VALIDATION_FAILED', http_status: 422, message: '输入不满足技能要求', detail: rawMsg };
+        // 🔴 不再一律吞成「输入不满足技能要求」——把 Dify 的原始 message 透传出来，
+        //   否则排查时看到的是假信息（例如真实原因是「缺少变量 category」）。
+        const real = extractProviderMessage(rawMsg).slice(0, 300);
+        return {
+            code: 'VALIDATION_FAILED',
+            http_status: 422,
+            message: real ? `输入不满足技能要求：${real}` : '输入不满足技能要求',
+            detail: rawMsg,
+        };
     }
     if (status >= 500 || e.code === 'ECONNREFUSED' || e.code === 'ENOTFOUND') {
         return { code: 'PROVIDER_ERROR', http_status: 502, message: 'AI 服务暂时不可用，请稍后重试', detail: rawMsg };
